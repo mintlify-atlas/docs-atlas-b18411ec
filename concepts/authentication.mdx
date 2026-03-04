@@ -1,0 +1,554 @@
+---
+title: 'Authentication'
+description: 'JWT-based authentication for securing CryptoPulse API endpoints'
+icon: 'shield'
+---
+
+## Overview
+
+CryptoPulse uses **JWT (JSON Web Token)** bearer authentication to secure all price endpoints. Clients must authenticate via the login endpoint, receive an access token, and include it in the `Authorization` header for subsequent requests.
+
+<Info>
+  The `/docs` Swagger UI and `/docs-json` OpenAPI spec are publicly accessible without authentication.
+</Info>
+
+## Authentication Flow
+
+```mermaid
+sequenceDiagram
+    participant Client
+    participant API
+    participant AuthService
+    participant JwtService
+    
+    Client->>API: POST /auth/login {username, password}
+    API->>AuthService: login(credentials)
+    AuthService->>AuthService: Validate credentials
+    AuthService->>JwtService: signAsync({sub, username})
+    JwtService-->>AuthService: accessToken
+    AuthService-->>API: {accessToken, tokenType, expiresIn}
+    API-->>Client: 200 OK + token
+    
+    Note over Client: Store token securely
+    
+    Client->>API: GET /v1/price/bitcoin<br/>Authorization: Bearer <token>
+    API->>JwtAuthGuard: canActivate()
+    JwtAuthGuard->>JwtService: verifyAsync(token)
+    JwtService-->>JwtAuthGuard: {sub, username}
+    JwtAuthGuard->>API: Attach user to request
+    API->>PriceService: getCurrentPrice('bitcoin')
+    API-->>Client: 200 OK + price data
+```
+
+## Step 1: Login
+
+### Request
+
+POST credentials to the login endpoint:
+
+```bash
+curl -X POST http://localhost:3000/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{
+    "username": "admin",
+    "password": "secret"
+  }'
+```
+
+### Response
+
+```json
+{
+  "accessToken": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJhZG1pbiIsInVzZXJuYW1lIjoiYWRtaW4iLCJpYXQiOjE3MDk4MjQ1MDAsImV4cCI6MTcwOTgyODEwMH0.signature",
+  "tokenType": "Bearer",
+  "expiresIn": "1h"
+}
+```
+
+<Warning>
+  Store the `accessToken` securely. Never expose it in logs, URLs, or client-side storage vulnerable to XSS.
+</Warning>
+
+### Login Implementation
+
+The login logic in `src/auth/auth.service.ts` validates credentials against environment variables:
+
+```typescript src/auth/auth.service.ts
+async login(credentials: LoginDto): Promise<TokenResponseDto> {
+  const expectedUser = this.configService.getOrThrow<string>('ADMIN_USER');
+  const expectedPass = this.configService.getOrThrow<string>('ADMIN_PASS');
+  
+  if (credentials.username !== expectedUser || credentials.password !== expectedPass) {
+    throw new UnauthorizedException('Invalid credentials');
+  }
+  
+  const expiresIn = this.configService.get<string>('JWT_EXPIRES_IN') ?? '1h';
+  const accessToken = await this.jwtService.signAsync({
+    sub: 'admin',
+    username: credentials.username,
+  });
+  
+  return {
+    accessToken,
+    tokenType: 'Bearer',
+    expiresIn,
+  };
+}
+```
+
+<Note>
+  The current implementation uses a single admin account configured via environment variables. For production use, consider integrating a user database.
+</Note>
+
+### Environment Configuration
+
+```bash .env
+ADMIN_USER=admin
+ADMIN_PASS=your-secure-password
+JWT_SECRET=your-secret-key-min-32-chars
+JWT_EXPIRES_IN=1h  # Can be: 30s, 5m, 2h, 7d
+```
+
+<Tabs>
+  <Tab title="JWT_SECRET">
+    **Required.** Secret key for signing tokens.
+    
+    - Must be at least 32 characters
+    - Use a cryptographically random string
+    - Never commit to version control
+    
+    Generate with:
+    ```bash
+    openssl rand -base64 32
+    ```
+  </Tab>
+  
+  <Tab title="JWT_EXPIRES_IN">
+    **Optional.** Token expiration time (default: `1h`).
+    
+    Supported formats:
+    - Seconds: `30s`, `120s`
+    - Minutes: `5m`, `30m`
+    - Hours: `1h`, `24h`
+    - Days: `7d`, `30d`
+    
+    Shorter expiry = more secure, but requires more frequent re-authentication.
+  </Tab>
+</Tabs>
+
+### Rate Limiting on Login
+
+Login endpoint is rate-limited to prevent brute-force attacks:
+
+```typescript src/auth/auth.controller.ts
+@Post('login')
+@Throttle({
+  default: {
+    ttl: () => toPositiveInt(process.env.THROTTLE_TTL_MS, 60000),
+    limit: () => toPositiveInt(process.env.THROTTLE_LOGIN_LIMIT, 5),
+  },
+})
+login(@Body() loginDto: LoginDto): Promise<TokenResponseDto> {
+  return this.authService.login(loginDto);
+}
+```
+
+**Default:** 5 login attempts per 60 seconds.
+
+Exceeding the limit returns `429 Too Many Requests`.
+
+## Step 2: Using the Token
+
+Include the token in the `Authorization` header with the `Bearer` scheme:
+
+```bash
+curl http://localhost:3000/v1/price/bitcoin \
+  -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+```
+
+### Token Validation
+
+All protected endpoints use the `JwtAuthGuard`:
+
+```typescript src/price/price.controller.ts
+@ApiTags('price')
+@ApiBearerAuth()
+@UseGuards(JwtAuthGuard)
+@Controller('v1/price')
+export class PriceController {
+  @Get(':coinId')
+  getPrice(@Param('coinId') coinId: string): Promise<PriceResponseDto> {
+    return this.priceService.getCurrentPrice(coinId);
+  }
+}
+```
+
+### JwtAuthGuard Implementation
+
+The guard extracts and verifies the token:
+
+```typescript src/auth/guards/jwt-auth.guard.ts
+@Injectable()
+export class JwtAuthGuard implements CanActivate {
+  constructor(private readonly jwtService: JwtService) {}
+  
+  async canActivate(context: ExecutionContext): Promise<boolean> {
+    const request = context.switchToHttp().getRequest<AppTypes.AuthenticatedRequest>();
+    const token = this.extractTokenFromAuthorizationHeader(request.headers.authorization);
+    
+    try {
+      request.user = await this.jwtService.verifyAsync<AppTypes.JwtPayload>(token);
+      return true;
+    } catch {
+      throw new UnauthorizedException('Invalid or expired token');
+    }
+  }
+  
+  private extractTokenFromAuthorizationHeader(
+    authorization: string | string[] | undefined,
+  ): string {
+    if (!authorization) {
+      throw new UnauthorizedException('Missing Authorization header');
+    }
+    
+    const rawHeader = Array.isArray(authorization) ? authorization[0] : authorization;
+    const trimmedHeader = rawHeader.trim();
+    const match = /^Bearer\s+(.+)$/i.exec(trimmedHeader);
+    
+    if (!match) {
+      throw new UnauthorizedException('Authorization header must use Bearer token');
+    }
+    
+    const token = match[1].trim();
+    
+    if (!token || token.includes(' ')) {
+      throw new UnauthorizedException('Invalid Bearer token');
+    }
+    
+    return token;
+  }
+}
+```
+
+### Validation Steps
+
+<Steps>
+  <Step title="Extract header">
+    Guard reads `Authorization` header from request
+  </Step>
+  
+  <Step title="Parse Bearer token">
+    Validates format: `Bearer <token>`
+    
+    Common errors:
+    - Missing header → `401 Missing Authorization header`
+    - Wrong format (e.g., just the token without "Bearer") → `401 Authorization header must use Bearer token`
+    - Token contains spaces → `401 Invalid Bearer token`
+  </Step>
+  
+  <Step title="Verify JWT signature">
+    Uses `JWT_SECRET` to verify token hasn't been tampered with
+  </Step>
+  
+  <Step title="Check expiration">
+    Ensures token hasn't exceeded `JWT_EXPIRES_IN`
+    
+    If expired → `401 Invalid or expired token`
+  </Step>
+  
+  <Step title="Attach user to request">
+    Decoded payload (e.g., `{sub: 'admin', username: 'admin'}`) is available in request handlers
+  </Step>
+</Steps>
+
+## JWT Module Configuration
+
+The JWT module is configured in `src/auth/auth.module.ts`:
+
+```typescript src/auth/auth.module.ts
+JwtModule.registerAsync({
+  inject: [ConfigService],
+  useFactory: (configService: ConfigService) => ({
+    secret: configService.getOrThrow<string>('JWT_SECRET'),
+    signOptions: {
+      expiresIn: parseJwtExpirationSeconds(configService.get<string>('JWT_EXPIRES_IN')),
+    },
+  }),
+}),
+```
+
+The helper `parseJwtExpirationSeconds` converts formats like `1h` to seconds:
+
+```typescript
+function parseJwtExpirationSeconds(value: string | undefined): number {
+  if (!value) return 3600;
+  
+  const numeric = Number(value);
+  if (Number.isInteger(numeric) && numeric > 0) {
+    return numeric;
+  }
+  
+  const match = /^(\d+)([smhd])$/i.exec(value.trim());
+  if (!match) return 3600;
+  
+  const amount = Number(match[1]);
+  const unit = match[2].toLowerCase();
+  
+  if (unit === 's') return amount;
+  if (unit === 'm') return amount * 60;
+  if (unit === 'h') return amount * 3600;
+  return amount * 86400; // days
+}
+```
+
+## Error Responses
+
+### Login Errors
+
+<Tabs>
+  <Tab title="400 Bad Request">
+    ```json
+    {
+      "statusCode": 400,
+      "message": ["username should not be empty"],
+      "error": "Bad Request"
+    }
+    ```
+    Validation failed (e.g., missing fields).
+  </Tab>
+  
+  <Tab title="401 Unauthorized">
+    ```json
+    {
+      "statusCode": 401,
+      "message": "Invalid credentials",
+      "error": "Unauthorized"
+    }
+    ```
+    Wrong username or password.
+  </Tab>
+  
+  <Tab title="429 Too Many Requests">
+    ```json
+    {
+      "statusCode": 429,
+      "message": "ThrottlerException: Too Many Requests",
+      "error": "Too Many Requests"
+    }
+    ```
+    Exceeded login rate limit (5 per minute by default).
+  </Tab>
+</Tabs>
+
+### Protected Endpoint Errors
+
+<Tabs>
+  <Tab title="401 Missing header">
+    ```json
+    {
+      "statusCode": 401,
+      "message": "Missing Authorization header",
+      "error": "Unauthorized"
+    }
+    ```
+    No `Authorization` header provided.
+  </Tab>
+  
+  <Tab title="401 Wrong format">
+    ```json
+    {
+      "statusCode": 401,
+      "message": "Authorization header must use Bearer token",
+      "error": "Unauthorized"
+    }
+    ```
+    Header doesn't start with "Bearer ".
+  </Tab>
+  
+  <Tab title="401 Invalid token">
+    ```json
+    {
+      "statusCode": 401,
+      "message": "Invalid or expired token",
+      "error": "Unauthorized"
+    }
+    ```
+    Token signature invalid, expired, or malformed.
+  </Tab>
+</Tabs>
+
+## Swagger Integration
+
+The Swagger UI at `/docs` is configured for bearer auth:
+
+```typescript src/main.ts
+const swaggerConfig = new DocumentBuilder()
+  .setTitle('Crypto Pulse API')
+  .setDescription(
+    [
+      'Crypto asset price inquiry API with bearer authentication...',
+      '',
+      'Quick start:',
+      '1) Call POST /auth/login to get accessToken',
+      '2) Click Authorize and use: Bearer <accessToken>',
+      '3) Call /v1/price/:coinId and /v1/price/:coinId/history',
+    ].join('\n'),
+  )
+  .addBearerAuth()
+  .build();
+```
+
+### Using Swagger UI
+
+<Steps>
+  <Step title="Open Swagger">
+    Navigate to `http://localhost:3000/docs`
+  </Step>
+  
+  <Step title="Login">
+    Expand `POST /auth/login`, click **Try it out**, enter credentials, and execute
+  </Step>
+  
+  <Step title="Copy token">
+    Copy the `accessToken` from the response
+  </Step>
+  
+  <Step title="Authorize">
+    Click the **Authorize** button (top right), paste token in format:
+    ```
+    Bearer <your-token-here>
+    ```
+    
+    Or just paste the token directly - Swagger adds "Bearer" automatically.
+  </Step>
+  
+  <Step title="Make requests">
+    All subsequent requests will include the Authorization header automatically
+  </Step>
+</Steps>
+
+<Tip>
+  Swagger UI is the easiest way to test authentication during development.
+</Tip>
+
+## Security Best Practices
+
+<AccordionGroup>
+  <Accordion title="Secure token storage">
+    **Client-side:**
+    - Use `httpOnly` cookies for web apps (prevents XSS)
+    - Use secure storage APIs for mobile apps
+    - Never store in localStorage if XSS risk exists
+    
+    **Server-side:**
+    - Never log full tokens
+    - Use environment variables for secrets
+    - Rotate `JWT_SECRET` periodically
+  </Accordion>
+  
+  <Accordion title="Token expiration">
+    - Short-lived tokens (1h) reduce risk if compromised
+    - Implement refresh tokens for long-running clients
+    - Force re-authentication for sensitive operations
+  </Accordion>
+  
+  <Accordion title="Rate limiting">
+    - Login endpoint is rate-limited by default
+    - Consider IP-based limits for additional protection
+    - Monitor for brute-force patterns
+  </Accordion>
+  
+  <Accordion title="HTTPS in production">
+    - ALWAYS use HTTPS in production
+    - Tokens in plain HTTP can be intercepted
+    - Configure HSTS headers
+  </Accordion>
+</AccordionGroup>
+
+## Common Issues
+
+<AccordionGroup>
+  <Accordion title="Token expired">
+    **Symptom:** `401 Invalid or expired token` after some time.
+    
+    **Solution:** Re-authenticate via `POST /auth/login` to get a fresh token.
+  </Accordion>
+  
+  <Accordion title="Wrong header format">
+    **Symptom:** `401 Authorization header must use Bearer token`.
+    
+    **Solution:** Ensure header is `Authorization: Bearer <token>`, not just the token.
+  </Accordion>
+  
+  <Accordion title="Secret mismatch">
+    **Symptom:** Token from one instance doesn't work on another.
+    
+    **Solution:** Ensure all instances use the SAME `JWT_SECRET`.
+  </Accordion>
+  
+  <Accordion title="Clock skew">
+    **Symptom:** Token appears expired immediately or works when it shouldn't.
+    
+    **Solution:** Synchronize system clocks (NTP) across all instances.
+  </Accordion>
+</AccordionGroup>
+
+## Testing Authentication
+
+### Manual Test
+
+```bash
+# 1. Login
+TOKEN=$(curl -s -X POST http://localhost:3000/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"username":"admin","password":"secret"}' \
+  | jq -r '.accessToken')
+
+echo "Token: $TOKEN"
+
+# 2. Use token
+curl http://localhost:3000/v1/price/bitcoin \
+  -H "Authorization: Bearer $TOKEN"
+
+# 3. Test without token (should fail)
+curl http://localhost:3000/v1/price/bitcoin
+
+# 4. Test with invalid token (should fail)
+curl http://localhost:3000/v1/price/bitcoin \
+  -H "Authorization: Bearer invalid-token"
+```
+
+### Unit Test Example
+
+From the codebase:
+
+```typescript
+it('should reject missing Authorization header', async () => {
+  const request = { headers: {} };
+  const context = createMockExecutionContext(request);
+  
+  await expect(guard.canActivate(context)).rejects.toThrow(
+    new UnauthorizedException('Missing Authorization header'),
+  );
+});
+
+it('should reject invalid Bearer format', async () => {
+  const request = { headers: { authorization: 'InvalidFormat token' } };
+  const context = createMockExecutionContext(request);
+  
+  await expect(guard.canActivate(context)).rejects.toThrow(
+    new UnauthorizedException('Authorization header must use Bearer token'),
+  );
+});
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="API Reference" icon="book" href="/api/endpoints/login">
+    View detailed login endpoint documentation
+  </Card>
+  <Card title="Rate Limiting" icon="gauge-high" href="/api/rate-limits">
+    Learn about throttling and rate limits
+  </Card>
+</CardGroup>

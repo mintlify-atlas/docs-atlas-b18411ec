@@ -1,0 +1,177 @@
+---
+title: 'Environment Variables'
+description: 'Complete reference for all CryptoPulse environment variables'
+---
+
+## Overview
+
+CryptoPulse uses environment variables for configuration. Copy `.env.example` to `.env` in your project root and configure the variables below.
+
+```bash
+cp .env.example .env
+```
+
+## Server Configuration
+
+<ParamField path="PORT" type="number" default="3000">
+  The port on which the API server will listen.
+  
+  **Example:** `3000`
+</ParamField>
+
+<ParamField path="LOG_LEVEL" type="string" default="info">
+  Logging verbosity level. Controls the Winston logger output.
+  
+  **Options:** `error`, `warn`, `info`, `debug`, `verbose`
+  
+  **Example:** `info`
+</ParamField>
+
+## Authentication
+
+<ParamField path="ADMIN_USER" type="string" required>
+  Username for JWT authentication via the `/auth/login` endpoint.
+  
+  **Example:** `admin`
+</ParamField>
+
+<ParamField path="ADMIN_PASS" type="string" required>
+  Password for JWT authentication via the `/auth/login` endpoint.
+  
+  **Example:** `secret`
+  
+  <Warning>Use a strong password in production environments.</Warning>
+</ParamField>
+
+<ParamField path="JWT_SECRET" type="string" required>
+  Secret key used to sign JWT tokens. Must be kept secure and never exposed.
+  
+  **Example:** `change-me`
+  
+  <Warning>Generate a cryptographically secure random string for production use.</Warning>
+</ParamField>
+
+<ParamField path="JWT_EXPIRES_IN" type="string" default="1h">
+  JWT token expiration time. Accepts time strings like `1h`, `30m`, `7d`.
+  
+  **Example:** `1h`
+</ParamField>
+
+## Database
+
+<ParamField path="DATABASE_URL" type="string" required>
+  PostgreSQL connection string. When running locally, use `localhost`. When running in Docker Compose, use the service name.
+  
+  **Format:** `postgres://username:password@host:port/database`
+  
+  **Example (local):** `postgres://postgres:postgres@localhost:5432/crypto_pulse`
+  
+  **Example (docker):** `postgres://postgres:postgres@postgres:5432/crypto_pulse`
+</ParamField>
+
+## Redis
+
+<ParamField path="REDIS_URL" type="string" required>
+  Redis connection string. Used for batching coordination and distributed throttling. When running locally, use `localhost`. When running in Docker Compose, use the service name.
+  
+  **Format:** `redis://host:port`
+  
+  **Example (local):** `redis://localhost:6379`
+  
+  **Example (docker):** `redis://redis:6379`
+</ParamField>
+
+## Rate Limiting
+
+<ParamField path="THROTTLE_TTL_MS" type="number" default="60000">
+  Throttle time window in milliseconds. Defines the rolling time window for rate limit counters.
+  
+  **Example:** `60000` (1 minute)
+</ParamField>
+
+<ParamField path="THROTTLE_GLOBAL_LIMIT" type="number" default="20">
+  Maximum number of requests allowed per `THROTTLE_TTL_MS` window for all endpoints (excluding `/docs` and `/docs-json`).
+  
+  **Example:** `20`
+</ParamField>
+
+<ParamField path="THROTTLE_LOGIN_LIMIT" type="number" default="5">
+  Maximum number of login requests allowed per `THROTTLE_TTL_MS` window for the `POST /auth/login` endpoint.
+  
+  **Example:** `5`
+</ParamField>
+
+## CoinGecko API
+
+<ParamField path="COINGECKO_API_KEY" type="string" required>
+  Your CoinGecko API key for accessing cryptocurrency price data.
+  
+  **Example:** `xyz`
+  
+  Get your API key from [CoinGecko](https://www.coingecko.com/en/api).
+</ParamField>
+
+<ParamField path="COINGECKO_BASE_URL" type="string" default="https://api.coingecko.com">
+  Base URL for the CoinGecko API. Typically only changed for testing purposes.
+  
+  **Example:** `https://api.coingecko.com`
+</ParamField>
+
+<ParamField path="COINGECKO_TIMEOUT_MS" type="number" default="3000">
+  Timeout in milliseconds for CoinGecko API requests.
+  
+  **Example:** `3000`
+</ParamField>
+
+## Request Batching
+
+<ParamField path="BATCH_WINDOW_MS" type="number" default="5000">
+  Time window in milliseconds to wait for additional requests before flushing a batch. The first request for a coin starts this timer.
+  
+  **Example:** `5000` (5 seconds)
+</ParamField>
+
+<ParamField path="BATCH_THRESHOLD" type="number" default="3">
+  Number of pending requests for the same coin that triggers an immediate batch flush, bypassing the `BATCH_WINDOW_MS` wait time.
+  
+  **Example:** `3`
+</ParamField>
+
+<ParamField path="REQUEST_TIMEOUT_MS" type="number" default="8000">
+  Maximum time in milliseconds that a single request will wait for a batch result before timing out.
+  
+  **Example:** `8000` (8 seconds)
+</ParamField>
+
+## Example Configuration
+
+```bash .env
+PORT=3000
+
+ADMIN_USER=admin
+ADMIN_PASS=secret
+JWT_SECRET=change-me
+JWT_EXPIRES_IN=1h
+
+# Use localhost when running app locally, or service name when running inside docker-compose
+DATABASE_URL=postgres://postgres:postgres@localhost:5432/crypto_pulse
+REDIS_URL=redis://localhost:6379
+
+THROTTLE_TTL_MS=60000
+THROTTLE_GLOBAL_LIMIT=20
+THROTTLE_LOGIN_LIMIT=5
+
+COINGECKO_BASE_URL=https://api.coingecko.com
+COINGECKO_API_KEY=xyz
+COINGECKO_TIMEOUT_MS=3000
+
+BATCH_WINDOW_MS=5000
+BATCH_THRESHOLD=3
+REQUEST_TIMEOUT_MS=8000
+
+LOG_LEVEL=info
+```
+
+## Validation
+
+All environment variables are validated on application startup using a custom validation function. Missing required variables will prevent the application from starting with a clear error message.

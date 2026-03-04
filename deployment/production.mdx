@@ -1,0 +1,610 @@
+---
+title: 'Production Deployment'
+description: 'Best practices for deploying CryptoPulse in production environments'
+---
+
+## Overview
+
+This guide covers security hardening, monitoring, and operational best practices for running CryptoPulse in production. Follow these recommendations to ensure a secure, reliable, and maintainable deployment.
+
+## Security Best Practices
+
+### Environment Variables
+
+<Warning>
+  Never commit `.env` files or expose secrets in logs, error messages, or version control.
+</Warning>
+
+#### Critical Secrets
+
+Generate strong, unique values for these variables:
+
+<Steps>
+  <Step title="JWT Secret">
+    Generate a secure random string (minimum 32 characters):
+
+    ```bash
+    # Generate a secure JWT secret
+    openssl rand -base64 48
+    ```
+
+    Set in `.env`:
+    ```bash
+    JWT_SECRET=your-generated-secret-here
+    ```
+  </Step>
+
+  <Step title="Admin Credentials">
+    Use a strong password with mixed case, numbers, and symbols:
+
+    ```bash
+    ADMIN_USER=admin
+    ADMIN_PASS=Str0ng!P@ssw0rd#2024
+    ```
+
+    Consider using a password manager to generate and store credentials.
+  </Step>
+
+  <Step title="Database Credentials">
+    Change default PostgreSQL credentials:
+
+    ```bash
+    POSTGRES_USER=cryptopulse_prod
+    POSTGRES_PASSWORD=generated-secure-password
+    DATABASE_URL=postgres://cryptopulse_prod:generated-secure-password@postgres:5432/crypto_pulse
+    ```
+  </Step>
+
+  <Step title="CoinGecko API Key">
+    Use a production-tier API key with appropriate rate limits:
+
+    ```bash
+    COINGECKO_API_KEY=your-production-api-key
+    ```
+  </Step>
+</Steps>
+
+### Network Security
+
+#### Firewall Configuration
+
+Only expose necessary ports:
+
+```bash
+# Allow HTTPS traffic
+sudo ufw allow 443/tcp
+
+# Allow SSH (restrict to specific IPs if possible)
+sudo ufw allow from YOUR_IP_ADDRESS to any port 22
+
+# Block direct access to PostgreSQL and Redis from external networks
+sudo ufw deny 5432/tcp
+sudo ufw deny 6379/tcp
+
+# Enable firewall
+sudo ufw enable
+```
+
+#### HTTPS/TLS Setup
+
+Always use HTTPS in production. Update the Nginx configuration:
+
+<CodeGroup>
+```nginx deploy/nginx/nginx.conf
+upstream crypto_pulse_api {
+  server api1:3000;
+  server api2:3000;
+}
+
+# Redirect HTTP to HTTPS
+server {
+  listen 80;
+  server_name api.yourdomain.com;
+  return 301 https://$server_name$request_uri;
+}
+
+server {
+  listen 443 ssl http2;
+  server_name api.yourdomain.com;
+
+  # SSL Certificate Configuration
+  ssl_certificate /etc/nginx/ssl/fullchain.pem;
+  ssl_certificate_key /etc/nginx/ssl/privkey.pem;
+
+  # SSL Security Settings
+  ssl_protocols TLSv1.2 TLSv1.3;
+  ssl_ciphers HIGH:!aNULL:!MD5;
+  ssl_prefer_server_ciphers on;
+  ssl_session_cache shared:SSL:10m;
+  ssl_session_timeout 10m;
+
+  # Security Headers
+  add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+  add_header X-Frame-Options "SAMEORIGIN" always;
+  add_header X-Content-Type-Options "nosniff" always;
+  add_header X-XSS-Protection "1; mode=block" always;
+
+  location / {
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header Connection "";
+    
+    # Timeouts
+    proxy_connect_timeout 60s;
+    proxy_send_timeout 60s;
+    proxy_read_timeout 60s;
+    
+    proxy_pass http://crypto_pulse_api;
+  }
+}
+```
+</CodeGroup>
+
+Mount SSL certificates in `docker-compose.multi.yml`:
+
+```yaml
+nginx:
+  image: nginx:1.27-alpine
+  volumes:
+    - ./deploy/nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    - /etc/letsencrypt/live/yourdomain.com/fullchain.pem:/etc/nginx/ssl/fullchain.pem:ro
+    - /etc/letsencrypt/live/yourdomain.com/privkey.pem:/etc/nginx/ssl/privkey.pem:ro
+  ports:
+    - '80:80'
+    - '443:443'
+```
+
+### Rate Limiting
+
+Adjust throttling limits based on your expected traffic:
+
+```bash .env
+# Throttle window in milliseconds
+THROTTLE_TTL_MS=60000
+
+# Global requests per window (across all endpoints)
+THROTTLE_GLOBAL_LIMIT=100
+
+# Login attempts per window
+THROTTLE_LOGIN_LIMIT=5
+```
+
+<Warning>
+  Set `THROTTLE_LOGIN_LIMIT` to a low value (3-5) to prevent brute force attacks on the login endpoint.
+</Warning>
+
+### Docker Security
+
+#### Run as Non-Root User
+
+Update the Dockerfile to run as a non-privileged user:
+
+```dockerfile Dockerfile
+FROM node:22-alpine AS runner
+WORKDIR /app
+
+# Create non-root user
+RUN addgroup -g 1001 -S nodejs && \
+    adduser -S nodejs -u 1001
+
+RUN corepack enable
+ENV NODE_ENV=production
+
+COPY package.json pnpm-lock.yaml ./
+RUN pnpm install --prod
+
+COPY --from=builder /app/.env ./.env
+COPY --from=builder /app/dist ./dist
+
+# Switch to non-root user
+USER nodejs
+
+EXPOSE 3000
+CMD ["node", "dist/main.js"]
+```
+
+#### Limit Resources
+
+Set resource limits in `docker-compose.multi.yml`:
+
+```yaml
+api1:
+  build:
+    context: .
+  deploy:
+    resources:
+      limits:
+        cpus: '1.0'
+        memory: 1G
+      reservations:
+        cpus: '0.5'
+        memory: 512M
+```
+
+## Database Management
+
+### Backup Strategy
+
+<Steps>
+  <Step title="Automated backups">
+    Create a backup script:
+
+    ```bash scripts/backup-db.sh
+    #!/bin/bash
+    BACKUP_DIR="/backups/postgres"
+    TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
+    BACKUP_FILE="$BACKUP_DIR/crypto_pulse_$TIMESTAMP.sql"
+
+    mkdir -p $BACKUP_DIR
+
+    docker compose -f docker-compose.multi.yml exec -T postgres \
+      pg_dump -U postgres crypto_pulse > $BACKUP_FILE
+
+    # Compress backup
+    gzip $BACKUP_FILE
+
+    # Delete backups older than 30 days
+    find $BACKUP_DIR -name "*.sql.gz" -mtime +30 -delete
+
+    echo "Backup completed: ${BACKUP_FILE}.gz"
+    ```
+
+    Make it executable:
+    ```bash
+    chmod +x scripts/backup-db.sh
+    ```
+  </Step>
+
+  <Step title="Schedule with cron">
+    Add to crontab for daily backups at 2 AM:
+
+    ```bash
+    crontab -e
+    ```
+
+    Add this line:
+    ```
+    0 2 * * * /path/to/scripts/backup-db.sh >> /var/log/crypto-pulse-backup.log 2>&1
+    ```
+  </Step>
+
+  <Step title="Test restoration">
+    Regularly test backup restoration:
+
+    ```bash
+    # Restore from backup
+    gunzip -c /backups/postgres/crypto_pulse_20240315_020000.sql.gz | \
+      docker compose -f docker-compose.multi.yml exec -T postgres \
+      psql -U postgres crypto_pulse
+    ```
+  </Step>
+</Steps>
+
+### Connection Pooling
+
+Optimize database connections for multiple instances:
+
+```bash .env
+# Connections per API instance
+DATABASE_POOL_SIZE=10
+DATABASE_POOL_MAX=20
+```
+
+With 2 API instances and pool size of 10, you'll have 20 total connections. Ensure PostgreSQL can handle this:
+
+```sql
+-- Check current max connections
+SHOW max_connections;
+
+-- Increase if needed (requires restart)
+ALTER SYSTEM SET max_connections = 100;
+```
+
+### Database Migrations
+
+Always test migrations before production:
+
+```bash
+# Test migration on staging
+docker compose -f docker-compose.multi.yml exec api1 pnpm run migration:run
+
+# If successful, run in production
+docker compose -f docker-compose.multi.yml exec api1 pnpm run migration:run
+```
+
+## Redis Configuration
+
+### Persistence
+
+Enable Redis persistence for production:
+
+```yaml docker-compose.multi.yml
+redis:
+  image: redis:7-alpine
+  command: redis-server --appendonly yes --appendfsync everysec
+  volumes:
+    - redis-data:/data
+  ports:
+    - '6379:6379'
+  healthcheck:
+    test: ['CMD', 'redis-cli', 'ping']
+    interval: 5s
+    timeout: 5s
+    retries: 10
+
+volumes:
+  redis-data:
+```
+
+### Memory Limits
+
+Set a maximum memory limit:
+
+```yaml
+redis:
+  image: redis:7-alpine
+  command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru
+```
+
+## Monitoring and Logging
+
+### Structured Logging
+
+Configure appropriate log levels:
+
+```bash .env
+# Production: use 'warn' or 'error'
+LOG_LEVEL=warn
+
+# Development: use 'debug' or 'info'
+LOG_LEVEL=info
+```
+
+### Log Aggregation
+
+Send logs to a centralized logging system:
+
+```yaml docker-compose.multi.yml
+api1:
+  logging:
+    driver: "json-file"
+    options:
+      max-size: "10m"
+      max-file: "3"
+```
+
+Or use a log aggregation service like ELK Stack, CloudWatch, or Datadog.
+
+### Health Checks
+
+Implement health check endpoints and monitor them:
+
+```bash
+# Check API health
+curl -f https://api.yourdomain.com/health || exit 1
+```
+
+Set up monitoring with tools like:
+- **UptimeRobot**: Simple uptime monitoring
+- **Prometheus + Grafana**: Metrics and dashboards
+- **Datadog**: Full-stack monitoring
+- **CloudWatch**: AWS-native monitoring
+
+### Metrics to Monitor
+
+| Metric | Alert Threshold | Action |
+|--------|----------------|--------|
+| API response time | > 2s (p95) | Scale up or optimize queries |
+| Error rate | > 1% | Check logs and investigate |
+| CPU usage | > 80% sustained | Add more instances |
+| Memory usage | > 85% | Increase container limits |
+| PostgreSQL connections | > 80% of max | Adjust pool size or scale DB |
+| Redis memory | > 90% | Increase maxmemory limit |
+| Disk usage | > 85% | Clean up old logs/backups |
+
+## Performance Optimization
+
+### Batching Configuration
+
+Tune batching parameters based on traffic patterns:
+
+```bash .env
+# Time to wait before flushing batch
+BATCH_WINDOW_MS=5000
+
+# Number of requests to trigger early flush
+BATCH_THRESHOLD=3
+
+# Maximum time a request can wait
+REQUEST_TIMEOUT_MS=8000
+```
+
+**Low traffic**: Increase `BATCH_WINDOW_MS` to 10000ms
+**High traffic**: Decrease to 2000ms and increase `BATCH_THRESHOLD` to 5-10
+
+### CoinGecko API Optimization
+
+```bash .env
+# Timeout for CoinGecko requests
+COINGECKO_TIMEOUT_MS=5000
+
+# Use Pro API for higher rate limits
+COINGECKO_BASE_URL=https://pro-api.coingecko.com
+```
+
+### Database Query Optimization
+
+Add indexes for frequently queried columns:
+
+```sql
+-- Index on timestamp for history queries
+CREATE INDEX idx_price_history_timestamp ON price_history(timestamp DESC);
+
+-- Index on coin_id for lookups
+CREATE INDEX idx_price_history_coin_id ON price_history(coin_id);
+
+-- Composite index for filtered history queries
+CREATE INDEX idx_price_history_coin_timestamp 
+  ON price_history(coin_id, timestamp DESC);
+```
+
+## Deployment Checklist
+
+Before deploying to production:
+
+- [ ] Change all default passwords and secrets
+- [ ] Enable HTTPS with valid SSL certificates
+- [ ] Configure firewall rules
+- [ ] Set up automated database backups
+- [ ] Enable Redis persistence
+- [ ] Configure resource limits for containers
+- [ ] Set appropriate log levels
+- [ ] Set up health check monitoring
+- [ ] Configure alerting for critical metrics
+- [ ] Test backup restoration procedure
+- [ ] Document incident response procedures
+- [ ] Set up log aggregation
+- [ ] Review and adjust rate limiting
+- [ ] Test rolling update procedure
+- [ ] Configure domain and DNS
+- [ ] Set up CDN (if needed)
+
+## Disaster Recovery
+
+### Backup Locations
+
+Store backups in multiple locations:
+
+1. **Local disk**: Fast recovery
+2. **Cloud storage**: S3, GCS, or Azure Blob
+3. **Off-site**: Different datacenter/region
+
+### Recovery Procedures
+
+<Steps>
+  <Step title="Database recovery">
+    ```bash
+    # Stop API instances
+    docker compose -f docker-compose.multi.yml stop api1 api2
+
+    # Restore database
+    gunzip -c backup.sql.gz | \
+      docker compose -f docker-compose.multi.yml exec -T postgres \
+      psql -U postgres crypto_pulse
+
+    # Restart API
+    docker compose -f docker-compose.multi.yml start api1 api2
+    ```
+  </Step>
+
+  <Step title="Redis recovery">
+    ```bash
+    # Redis will auto-load from appendonly.aof on restart
+    docker compose -f docker-compose.multi.yml restart redis
+    ```
+  </Step>
+
+  <Step title="Full system recovery">
+    ```bash
+    # Restore .env file
+    cp /secure/location/.env.backup .env
+
+    # Restore database backup
+    # (see step 1)
+
+    # Rebuild and start all services
+    docker compose -f docker-compose.multi.yml up --build -d
+    ```
+  </Step>
+</Steps>
+
+### Recovery Time Objectives
+
+| Component | RTO Target | Recovery Procedure |
+|-----------|-----------|-------------------|
+| API | < 5 minutes | Restart container or roll back image |
+| Database | < 15 minutes | Restore from latest backup |
+| Redis | < 2 minutes | Restart with persistence enabled |
+| Full system | < 30 minutes | Redeploy from backup and restore DB |
+
+## Scaling Strategies
+
+### Vertical Scaling
+
+Increase resources for existing instances:
+
+```yaml
+api1:
+  deploy:
+    resources:
+      limits:
+        cpus: '2.0'    # Increase from 1.0
+        memory: 2G     # Increase from 1G
+```
+
+### Horizontal Scaling
+
+Add more API instances as traffic grows. See [Multi-Instance Deployment](/deployment/multi-instance) for detailed instructions.
+
+### Database Scaling
+
+For high-traffic scenarios:
+
+1. **Read replicas**: Separate read and write operations
+2. **Connection pooling**: PgBouncer for connection management
+3. **Managed services**: Use AWS RDS, Google Cloud SQL, or Azure Database
+
+## Production Troubleshooting
+
+### High CPU Usage
+
+```bash
+# Check which container is using CPU
+docker stats
+
+# Check API logs for slow queries
+docker compose -f docker-compose.multi.yml logs api1 | grep -i "slow"
+```
+
+### Memory Leaks
+
+```bash
+# Monitor memory over time
+watch -n 5 'docker stats --no-stream'
+
+# Restart affected instance
+docker compose -f docker-compose.multi.yml restart api1
+```
+
+### Database Connection Exhaustion
+
+```sql
+-- Check active connections
+SELECT count(*) FROM pg_stat_activity;
+
+-- Kill idle connections
+SELECT pg_terminate_backend(pid) 
+FROM pg_stat_activity 
+WHERE state = 'idle' 
+  AND state_change < now() - interval '1 hour';
+```
+
+### Redis Out of Memory
+
+```bash
+# Check Redis memory usage
+docker compose -f docker-compose.multi.yml exec redis redis-cli INFO memory
+
+# Flush old data if safe
+docker compose -f docker-compose.multi.yml exec redis redis-cli FLUSHDB
+```
+
+## Next Steps
+
+- [Docker Deployment](/deployment/docker) - Single instance setup
+- [Multi-Instance Deployment](/deployment/multi-instance) - Horizontal scaling
+- [Configuration Reference](/configuration/environment-variables) - All environment variables
+- [API Reference](/api/authentication) - Using the API

@@ -1,0 +1,247 @@
+---
+title: Swagger Documentation
+description: Interactive API documentation with Swagger UI
+---
+
+The CryptoPulse API includes interactive Swagger/OpenAPI documentation that allows you to explore and test all API endpoints directly from your browser.
+
+## Accessing Swagger UI
+
+The Swagger documentation is available at:
+
+```
+http://localhost:3000/docs
+```
+
+<Note>
+Replace `localhost:3000` with your actual API host and port. The default port is 3000, but this can be configured via the `PORT` environment variable.
+</Note>
+
+### Swagger JSON Specification
+
+The raw OpenAPI JSON specification is available at:
+
+```
+http://localhost:3000/docs-json
+```
+
+This endpoint returns the complete OpenAPI 3.0 specification that can be imported into other tools like Postman, Insomnia, or code generators.
+
+## What's Included
+
+The Swagger documentation includes:
+
+### Complete API Reference
+
+- **All endpoints**: Auth and Price endpoints
+- **HTTP methods**: GET, POST, etc.
+- **Request parameters**: Path params, query params, request bodies
+- **Response schemas**: Success and error response formats
+- **Authentication**: Bearer token authentication setup
+
+### Interactive Features
+
+- **Try it out**: Execute API requests directly from the browser
+- **Request/Response examples**: Pre-filled example data for all endpoints
+- **Schema documentation**: Detailed DTO and model definitions
+- **Authentication testing**: Built-in authorization header management
+
+### Error Documentation
+
+Each endpoint includes all possible HTTP status codes:
+
+- `200` - Success responses
+- `400` - Bad Request (validation errors)
+- `401` - Unauthorized (authentication errors)
+- `404` - Not Found (resource doesn't exist)
+- `429` - Too Many Requests (rate limit exceeded)
+- `502` - Bad Gateway (upstream failure)
+- `503` - Service Unavailable (Redis unavailable)
+- `504` - Gateway Timeout (request timeout)
+
+## How to Use Swagger UI
+
+### Step 1: Access the Documentation
+
+Open your browser and navigate to:
+
+```
+http://localhost:3000/docs
+```
+
+You'll see the Swagger UI interface with all available endpoints organized by tags (auth, price).
+
+### Step 2: Authenticate
+
+1. **Get an access token**:
+   - Expand the `POST /auth/login` endpoint
+   - Click **Try it out**
+   - Enter your credentials in the request body:
+     ```json
+     {
+       "username": "admin",
+       "password": "your-password"
+     }
+     ```
+   - Click **Execute**
+   - Copy the `accessToken` from the response
+
+2. **Set up authentication**:
+   - Click the **Authorize** button at the top right
+   - In the dialog, enter: `Bearer <your-access-token>`
+   - Click **Authorize**
+   - Click **Close**
+
+<Tip>
+Once authorized, the token will be automatically included in all subsequent requests. You'll see a lock icon next to protected endpoints.
+</Tip>
+
+### Step 3: Test Endpoints
+
+With authentication set up, you can now test protected endpoints:
+
+1. **Get current price**:
+   - Expand `GET /v1/price/{coinId}`
+   - Click **Try it out**
+   - Enter a coin ID (e.g., `bitcoin`)
+   - Click **Execute**
+   - View the response below
+
+2. **Get price history**:
+   - Expand `GET /v1/price/{coinId}/history`
+   - Click **Try it out**
+   - Enter a coin ID and optional query parameters
+   - Click **Execute**
+   - View the paginated response
+
+### Step 4: Explore Schemas
+
+Scroll down to the **Schemas** section to see detailed documentation for:
+
+- Request DTOs (LoginDto, HistoryQueryDto)
+- Response DTOs (PriceResponseDto, HistoryResponseDto, TokenResponseDto)
+- Error responses (ErrorResponseDto)
+
+## API Overview in Swagger
+
+The Swagger UI displays the following information from the API configuration:
+
+**Title**: Crypto Pulse API
+
+**Description**:
+```
+Crypto asset price inquiry API with bearer authentication,
+request batching, and price history.
+
+Quick start:
+1) Call POST /auth/login to get accessToken
+2) Click Authorize and use: Bearer <accessToken>
+3) Call /v1/price/:coinId and /v1/price/:coinId/history
+```
+
+**Version**: 1.0.0
+
+## Configuration
+
+Swagger is configured in `src/main.ts` using the following setup:
+
+```typescript
+const swaggerConfig = new DocumentBuilder()
+  .setTitle('Crypto Pulse API')
+  .setDescription('...')
+  .setVersion('1.0.0')
+  .addBearerAuth()
+  .build();
+
+const document = SwaggerModule.createDocument(app, swaggerConfig);
+SwaggerModule.setup('docs', app, document);
+```
+
+### Decorators Used
+
+The API uses Swagger decorators to document endpoints:
+
+- `@ApiTags()` - Group endpoints by category
+- `@ApiOperation()` - Describe endpoint purpose
+- `@ApiParam()` - Document path parameters
+- `@ApiBody()` - Document request body
+- `@ApiOkResponse()` - Document success responses
+- `@ApiBadRequestResponse()` - Document 400 errors
+- `@ApiUnauthorizedResponse()` - Document 401 errors
+- `@ApiNotFoundResponse()` - Document 404 errors
+- `@ApiTooManyRequestsResponse()` - Document 429 errors
+- `@ApiServiceUnavailableResponse()` - Document 503 errors
+- `@ApiGatewayTimeoutResponse()` - Document 504 errors
+- `@ApiBearerAuth()` - Mark endpoints as requiring authentication
+
+## Benefits of Swagger Documentation
+
+### For Developers
+
+- **No separate documentation**: API docs are generated from code annotations
+- **Always up-to-date**: Changes to controllers automatically update Swagger
+- **Type safety**: Uses the same DTOs as the actual API
+- **Quick testing**: No need for separate API testing tools during development
+
+### For API Consumers
+
+- **Interactive exploration**: Try endpoints without writing code
+- **Clear examples**: See exactly what data to send and expect
+- **Complete reference**: All endpoints, parameters, and responses in one place
+- **Easy integration**: Export OpenAPI spec for code generation
+
+## Rate Limiting
+
+<Info>
+The Swagger documentation endpoints (`/docs` and `/docs-json`) are **excluded from rate limiting**. You can access them freely without consuming your API quota.
+</Info>
+
+This exclusion is implemented in the `AppThrottlerGuard` which checks the request path and bypasses rate limiting for documentation routes.
+
+## Example Response
+
+When you execute `GET /v1/price/bitcoin` through Swagger, you'll see:
+
+```json
+{
+  "coinId": "bitcoin",
+  "vsCurrency": "usd",
+  "price": 67210.45,
+  "fetchedAt": "2026-02-28T03:55:00.000Z"
+}
+```
+
+The Swagger UI displays:
+- **Response code**: 200
+- **Response body**: Formatted JSON with syntax highlighting
+- **Response headers**: Content-Type, etc.
+- **Request duration**: Time taken to execute the request
+
+## Troubleshooting
+
+### Cannot Access /docs
+
+If you can't access the Swagger UI:
+
+1. Verify the API is running: Check the console for `Application is running on: http://localhost:3000`
+2. Check the port: Ensure you're using the correct port from `PORT` environment variable
+3. Check logs: Look for any startup errors related to Swagger setup
+
+### 401 Unauthorized on Protected Endpoints
+
+If you get 401 errors when testing protected endpoints:
+
+1. Ensure you've called `/auth/login` and received a token
+2. Click **Authorize** and enter `Bearer <token>` (with the space)
+3. Verify the token hasn't expired (default: 1 hour)
+4. Check that the lock icon is closed (locked) on the endpoint
+
+### Rate Limit Errors in Swagger
+
+If you encounter 429 errors while testing:
+
+- **Login endpoint**: Limited to 5 requests per 60 seconds
+- **Price endpoints**: Limited to 20 requests per 60 seconds
+- Wait for the rate limit window to reset or adjust `THROTTLE_*` environment variables
+
+See [Rate Limits](/api/rate-limits) for more details.

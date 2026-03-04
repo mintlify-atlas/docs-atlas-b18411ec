@@ -1,0 +1,102 @@
+---
+title: 'POST /auth/login'
+description: 'Authenticate and issue bearer token'
+---
+
+## Overview
+
+Use valid admin credentials to receive a JWT access token. Use that token as `Authorization: Bearer <token>` on protected endpoints.
+
+## Endpoint
+
+```
+POST /auth/login
+```
+
+## Authentication
+
+No authentication required.
+
+## Rate Limiting
+
+- **Limit**: 5 requests per 60 seconds (configurable via `THROTTLE_LOGIN_LIMIT`)
+- **Window**: 60 seconds (configurable via `THROTTLE_TTL_MS`)
+
+## Request Body
+
+<ParamField body="username" type="string" required>
+  Admin username
+  
+  Example: `admin`
+</ParamField>
+
+<ParamField body="password" type="string" required>
+  Admin password
+  
+  Example: `secret`
+</ParamField>
+
+## Response
+
+<ResponseField name="accessToken" type="string">
+  JWT access token to use in subsequent requests
+  
+  Example: `eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJhZG1pbiIsInVzZXJuYW1lIjoiYWRtaW4ifQ.signature`
+</ResponseField>
+
+<ResponseField name="tokenType" type="string">
+  Token type (always "Bearer")
+  
+  Example: `Bearer`
+</ResponseField>
+
+<ResponseField name="expiresIn" type="string">
+  Token expiration duration
+  
+  Example: `1h`
+</ResponseField>
+
+## Example Request
+
+```bash
+curl -X POST http://localhost:3000/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{
+    "username": "admin",
+    "password": "secret"
+  }'
+```
+
+## Example Response
+
+```json
+{
+  "accessToken": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJhZG1pbiIsInVzZXJuYW1lIjoiYWRtaW4ifQ.signature",
+  "tokenType": "Bearer",
+  "expiresIn": "1h"
+}
+```
+
+## Error Codes
+
+| Status Code | Description |
+|-------------|-------------|
+| `200` | Login successful |
+| `400` | Validation error in request body (missing username or password) |
+| `401` | Invalid username or password |
+| `429` | Login rate limit exceeded (5 requests per 60 seconds) |
+| `503` | Rate limiter backend unavailable |
+
+## Error Response Format
+
+All errors follow this format:
+
+```json
+{
+  "statusCode": 400,
+  "message": "username should not be empty",
+  "error": "Bad Request"
+}
+```
+
+The `message` field may be a string or an array of validation error messages.

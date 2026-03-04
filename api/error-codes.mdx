@@ -1,0 +1,170 @@
+---
+title: Error Codes
+description: Complete list of HTTP status codes used by the CryptoPulse API
+---
+
+The CryptoPulse API uses standard HTTP status codes to indicate the success or failure of requests. Below is a complete reference of all status codes returned by the API.
+
+## Success Codes
+
+### 200 OK
+
+The request was successful.
+
+- **POST /auth/login**: Authentication successful, access token returned
+- **GET /v1/price/:coinId**: Current price successfully retrieved
+- **GET /v1/price/:coinId/history**: Historical prices successfully retrieved
+
+## Client Error Codes
+
+### 400 Bad Request
+
+The request was malformed or contains invalid parameters.
+
+**Occurs when:**
+- **POST /auth/login**: Invalid request body or missing required fields
+- **GET /v1/price/:coinId**: Invalid `coinId` format (must be lowercase, numbers, and hyphens)
+- **GET /v1/price/:coinId/history**: Invalid query parameters (incorrect date format, invalid `limit`/`page` values, or `from` date is after `to` date)
+
+```json
+{
+  "statusCode": 400,
+  "message": "Validation failed",
+  "error": "Bad Request"
+}
+```
+
+### 401 Unauthorized
+
+Authentication failed or is missing.
+
+**Occurs when:**
+- **POST /auth/login**: Invalid username or password
+- **GET /v1/price/:coinId**: Missing or invalid bearer token
+- **GET /v1/price/:coinId/history**: Missing or invalid bearer token
+
+```json
+{
+  "statusCode": 401,
+  "message": "Unauthorized",
+  "error": "Unauthorized"
+}
+```
+
+<Note>
+Protected endpoints require a valid JWT token in the `Authorization` header as `Bearer <token>`. Obtain a token by calling POST /auth/login.
+</Note>
+
+### 404 Not Found
+
+The requested resource does not exist.
+
+**Occurs when:**
+- **GET /v1/price/:coinId**: Coin ID not found in CoinGecko's database
+
+```json
+{
+  "statusCode": 404,
+  "message": "Coin not found",
+  "error": "Not Found"
+}
+```
+
+### 429 Too Many Requests
+
+Rate limit exceeded.
+
+**Occurs when:**
+- **POST /auth/login**: Login rate limit exceeded (5 requests per 60 seconds)
+- **GET /v1/price/:coinId**: Global rate limit exceeded (20 requests per 60 seconds) or upstream CoinGecko rate limit
+- **GET /v1/price/:coinId/history**: Global rate limit exceeded (20 requests per 60 seconds)
+
+```json
+{
+  "statusCode": 429,
+  "message": "ThrottlerException: Too Many Requests",
+  "error": "Too Many Requests"
+}
+```
+
+<Info>
+See [Rate Limits](/api/rate-limits) for detailed information about rate limiting behavior.
+</Info>
+
+## Server Error Codes
+
+### 502 Bad Gateway
+
+Upstream service request failed.
+
+**Occurs when:**
+- **GET /v1/price/:coinId**: CoinGecko API request failed or returned an error
+
+```json
+{
+  "statusCode": 502,
+  "message": "Upstream request failed",
+  "error": "Bad Gateway"
+}
+```
+
+### 503 Service Unavailable
+
+Backend coordination service is unavailable.
+
+**Occurs when:**
+- **POST /auth/login**: Redis (rate limiter backend) is unavailable
+- **GET /v1/price/:coinId**: Redis is unavailable (needed for rate limiting or request batching coordination)
+- **GET /v1/price/:coinId/history**: Redis (rate limiter backend) is unavailable
+
+```json
+{
+  "statusCode": 503,
+  "message": "Rate limiter unavailable",
+  "error": "Service Unavailable"
+}
+```
+
+<Warning>
+This error indicates a backend infrastructure issue. Redis is required for rate limiting and request batching coordination across multiple API instances.
+</Warning>
+
+### 504 Gateway Timeout
+
+Request timed out while waiting for a response.
+
+**Occurs when:**
+- **GET /v1/price/:coinId**: Timed out waiting for batch result (default timeout: 8 seconds)
+
+```json
+{
+  "statusCode": 504,
+  "message": "Request timeout",
+  "error": "Gateway Timeout"
+}
+```
+
+## Error Response Format
+
+All error responses follow the standard NestJS error format:
+
+```json
+{
+  "statusCode": 400,
+  "message": "Detailed error message",
+  "error": "HTTP status text"
+}
+```
+
+For validation errors (400), the `message` field may contain an array of specific validation failures:
+
+```json
+{
+  "statusCode": 400,
+  "message": [
+    "coinId must be a string",
+    "coinId should not be empty"
+  ],
+  "error": "Bad Request"
+}
+```

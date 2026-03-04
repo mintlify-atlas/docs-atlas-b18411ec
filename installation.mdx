@@ -1,0 +1,516 @@
+---
+title: Installation
+description: Detailed installation guide for local development and production deployments
+---
+
+# Installation Guide
+
+This guide covers multiple installation methods for CryptoPulse, from local development to production-ready multi-instance deployments.
+
+## Prerequisites
+
+### Required Software
+
+<CardGroup cols={2}>
+  <Card title="Node.js" icon="node-js">
+    Version 22 or higher required
+  </Card>
+  
+  <Card title="pnpm" icon="box">
+    Package manager for local development
+  </Card>
+  
+  <Card title="PostgreSQL" icon="database">
+    Version 16+ recommended
+  </Card>
+  
+  <Card title="Redis" icon="server">
+    Version 7+ for coordination and throttling
+  </Card>
+</CardGroup>
+
+### Optional Software
+
+- **Docker & Docker Compose**: For containerized deployments
+- **nginx**: For load balancing multiple instances
+
+### External Services
+
+<Warning>
+You **must** have a CoinGecko API key. Sign up at [coingecko.com/en/api](https://www.coingecko.com/en/api). The free tier is sufficient for development.
+</Warning>
+
+## Installation Methods
+
+<Tabs>
+  <Tab title="Local Development">
+    ### Local Development Setup
+    
+    Perfect for development and testing without containers.
+    
+    <Steps>
+      <Step title="Install Dependencies">
+        Ensure Node.js 22+ and pnpm are installed:
+        
+        ```bash
+        node --version  # Should be 22 or higher
+        pnpm --version
+        ```
+        
+        If pnpm isn't installed:
+        
+        ```bash
+        npm install -g pnpm
+        ```
+      </Step>
+      
+      <Step title="Clone and Install">
+        ```bash
+        git clone <repository-url>
+        cd crypto-pulse
+        pnpm install
+        ```
+      </Step>
+      
+      <Step title="Set Up Local Services">
+        You need PostgreSQL and Redis running locally. Using Docker:
+        
+        ```bash
+        # Start only PostgreSQL and Redis
+        docker compose -f docker-compose.local.yml up -d
+        ```
+        
+        Or install them natively:
+        
+        <CodeGroup>
+        ```bash macOS (Homebrew)
+        brew install postgresql@16 redis
+        brew services start postgresql@16
+        brew services start redis
+        
+        # Create database
+        createdb crypto_pulse
+        ```
+        
+        ```bash Ubuntu/Debian
+        sudo apt update
+        sudo apt install postgresql-16 redis-server
+        sudo systemctl start postgresql redis-server
+        
+        # Create database
+        sudo -u postgres createdb crypto_pulse
+        ```
+        </CodeGroup>
+      </Step>
+      
+      <Step title="Configure Environment">
+        Copy `.env.example` to `.env` and configure for localhost:
+        
+        ```bash
+        cp .env.example .env
+        ```
+        
+        Edit `.env`:
+        
+        ```bash .env
+        PORT=3000
+        
+        ADMIN_USER=admin
+        ADMIN_PASS=secret
+        JWT_SECRET=your-secure-secret-here
+        JWT_EXPIRES_IN=1h
+        
+        # Use localhost for local development
+        DATABASE_URL=postgres://postgres:postgres@localhost:5432/crypto_pulse
+        REDIS_URL=redis://localhost:6379
+        
+        THROTTLE_TTL_MS=60000
+        THROTTLE_GLOBAL_LIMIT=20
+        THROTTLE_LOGIN_LIMIT=5
+        
+        COINGECKO_BASE_URL=https://api.coingecko.com
+        COINGECKO_API_KEY=your-api-key-here
+        COINGECKO_TIMEOUT_MS=3000
+        
+        BATCH_WINDOW_MS=5000
+        BATCH_THRESHOLD=3
+        REQUEST_TIMEOUT_MS=8000
+        
+        LOG_LEVEL=info
+        ```
+      </Step>
+      
+      <Step title="Run Development Server">
+        ```bash
+        pnpm run start:dev
+        ```
+        
+        The API will start with hot-reload enabled. Access:
+        
+        - API: [http://localhost:3000](http://localhost:3000)
+        - Swagger: [http://localhost:3000/docs](http://localhost:3000/docs)
+      </Step>
+    </Steps>
+    
+    ### Development Commands
+    
+    ```bash
+    # Run with hot-reload
+    pnpm run start:dev
+    
+    # Build for production
+    pnpm run build
+    
+    # Run production build
+    pnpm run start:prod
+    
+    # Run tests
+    pnpm run test
+    pnpm run test:e2e
+    pnpm run test:cov  # with coverage
+    
+    # Lint and format
+    pnpm run lint
+    pnpm run format
+    pnpm run check  # lint + format
+    ```
+  </Tab>
+  
+  <Tab title="Docker Single Instance">
+    ### Docker Single Instance
+    
+    Run everything (PostgreSQL, Redis, API) as a single stack.
+    
+    <Steps>
+      <Step title="Clone Repository">
+        ```bash
+        git clone <repository-url>
+        cd crypto-pulse
+        ```
+      </Step>
+      
+      <Step title="Configure Environment">
+        ```bash
+        cp .env.example .env
+        ```
+        
+        Edit `.env` and use Docker service names:
+        
+        ```bash .env
+        PORT=3000
+        
+        ADMIN_USER=admin
+        ADMIN_PASS=secret
+        JWT_SECRET=your-secure-secret-here
+        JWT_EXPIRES_IN=1h
+        
+        # Use Docker service names for inter-container networking
+        DATABASE_URL=postgres://postgres:postgres@postgres:5432/crypto_pulse
+        REDIS_URL=redis://redis:6379
+        
+        COINGECKO_API_KEY=your-api-key-here
+        COINGECKO_BASE_URL=https://api.coingecko.com
+        COINGECKO_TIMEOUT_MS=3000
+        
+        BATCH_WINDOW_MS=5000
+        BATCH_THRESHOLD=3
+        REQUEST_TIMEOUT_MS=8000
+        
+        LOG_LEVEL=info
+        ```
+      </Step>
+      
+      <Step title="Start Services">
+        ```bash
+        docker compose up --build
+        ```
+        
+        Wait for health checks:
+        
+        ```
+        ✔ postgres  Healthy
+        ✔ redis     Healthy
+        ✔ api       Started
+        ```
+        
+        Access the API at [http://localhost:3000](http://localhost:3000)
+      </Step>
+    </Steps>
+    
+    ### Docker Commands
+    
+    ```bash
+    # Start in detached mode
+    docker compose up -d
+    
+    # View logs
+    docker compose logs -f api
+    
+    # Restart API only
+    docker compose restart api
+    
+    # Stop services
+    docker compose down
+    
+    # Stop and remove volumes (deletes data)
+    docker compose down -v
+    
+    # Rebuild after code changes
+    docker compose up --build
+    ```
+  </Tab>
+  
+  <Tab title="Docker Multi-Instance">
+    ### Docker Multi-Instance with Load Balancer
+    
+    Production-ready setup with nginx load balancing across 2 API instances.
+    
+    <Steps>
+      <Step title="Clone Repository">
+        ```bash
+        git clone <repository-url>
+        cd crypto-pulse
+        ```
+      </Step>
+      
+      <Step title="Configure Environment">
+        ```bash
+        cp .env.example .env
+        ```
+        
+        Use the same configuration as single instance setup.
+      </Step>
+      
+      <Step title="Start Multi-Instance Stack">
+        ```bash
+        docker compose -f docker-compose.multi.yml up --build -d
+        ```
+        
+        This launches:
+        - 1x PostgreSQL (shared)
+        - 1x Redis (shared)
+        - 2x API instances (`api1`, `api2`)
+        - 1x nginx load balancer
+      </Step>
+      
+      <Step title="Access via Load Balancer">
+        All requests go through nginx at [http://localhost:3000](http://localhost:3000)
+        
+        nginx automatically distributes traffic between `api1` and `api2`.
+      </Step>
+    </Steps>
+    
+    ### Architecture
+    
+    ```
+    Client → nginx:3000 → ┬→ api1:3000 ┐
+                           │            ├→ postgres:5432
+                           └→ api2:3000 ┘    redis:6379
+    ```
+    
+    <Note>
+    Redis ensures batching coordination and throttling work correctly across both API instances. When `api1` receives a request for `bitcoin` and `api2` receives another within the batch window, they coordinate through Redis to make only one CoinGecko call.
+    </Note>
+    
+    ### Multi-Instance Commands
+    
+    ```bash
+    # View all services
+    docker compose -f docker-compose.multi.yml ps
+    
+    # Logs from specific service
+    docker compose -f docker-compose.multi.yml logs -f api1
+    docker compose -f docker-compose.multi.yml logs -f nginx
+    
+    # Scale to 4 instances (requires nginx config update)
+    docker compose -f docker-compose.multi.yml up -d --scale api=4
+    
+    # Stop everything
+    docker compose -f docker-compose.multi.yml down -v
+    ```
+  </Tab>
+</Tabs>
+
+## Environment Variables Reference
+
+### Authentication
+
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `ADMIN_USER` | Yes | - | Username for `/auth/login` |
+| `ADMIN_PASS` | Yes | - | Password for `/auth/login` |
+| `JWT_SECRET` | Yes | - | Secret for signing JWT tokens |
+| `JWT_EXPIRES_IN` | No | `1h` | Token expiration (e.g., `1h`, `30m`, `7d`) |
+
+### Database & Cache
+
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `DATABASE_URL` | Yes | - | PostgreSQL connection string |
+| `REDIS_URL` | Yes | - | Redis connection string |
+
+### Rate Limiting
+
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `THROTTLE_TTL_MS` | No | `60000` | Throttle window duration in milliseconds |
+| `THROTTLE_GLOBAL_LIMIT` | No | `20` | Max requests per window (all endpoints) |
+| `THROTTLE_LOGIN_LIMIT` | No | `5` | Max login attempts per window |
+
+### CoinGecko Integration
+
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `COINGECKO_API_KEY` | Yes | - | Your CoinGecko API key |
+| `COINGECKO_BASE_URL` | No | `https://api.coingecko.com` | CoinGecko API base URL |
+| `COINGECKO_TIMEOUT_MS` | No | `3000` | Upstream request timeout |
+
+### Batching Configuration
+
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `BATCH_WINDOW_MS` | No | `5000` | Max time to wait before flushing batch |
+| `BATCH_THRESHOLD` | No | `3` | Number of requests to trigger early flush |
+| `REQUEST_TIMEOUT_MS` | No | `8000` | Max wait time per client request |
+
+### Application
+
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `PORT` | No | `3000` | HTTP server port |
+| `LOG_LEVEL` | No | `info` | Winston log level (`error`, `warn`, `info`, `debug`) |
+
+## Database Setup
+
+### Automatic Migration
+
+TypeORM automatically creates tables on first startup. No manual migration needed.
+
+### Manual Database Access
+
+<CodeGroup>
+```bash Docker
+# Connect to PostgreSQL in Docker
+docker compose exec postgres psql -U postgres -d crypto_pulse
+```
+
+```bash Local
+# Connect to local PostgreSQL
+psql -U postgres -d crypto_pulse
+```
+</CodeGroup>
+
+Useful queries:
+
+```sql
+-- View all price records
+SELECT * FROM price_snapshot ORDER BY fetched_at DESC LIMIT 10;
+
+-- Count records per coin
+SELECT coin_id, COUNT(*) as count 
+FROM price_snapshot 
+GROUP BY coin_id;
+
+-- Clear all data
+TRUNCATE TABLE price_snapshot;
+```
+
+## Verification
+
+After installation, verify everything works:
+
+<Steps>
+  <Step title="Check Service Health">
+    ```bash
+    curl http://localhost:3000/docs
+    ```
+    
+    Should return the Swagger HTML page.
+  </Step>
+  
+  <Step title="Test Authentication">
+    ```bash
+    curl -X POST http://localhost:3000/auth/login \
+      -H "Content-Type: application/json" \
+      -d '{"username":"admin","password":"secret"}'
+    ```
+    
+    Should return a JWT token.
+  </Step>
+  
+  <Step title="Test Price Endpoint">
+    ```bash
+    TOKEN="your-token-here"
+    curl http://localhost:3000/v1/price/bitcoin \
+      -H "Authorization: Bearer $TOKEN"
+    ```
+    
+    Should return Bitcoin's current price.
+  </Step>
+</Steps>
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="Port 3000 already in use">
+    Change the `PORT` in `.env` to something else like `3001`, then restart.
+  </Accordion>
+  
+  <Accordion title="Cannot connect to PostgreSQL">
+    Verify PostgreSQL is running:
+    
+    ```bash
+    # Docker
+    docker compose ps postgres
+    
+    # Local
+    pg_isready -h localhost -p 5432
+    ```
+    
+    Check the `DATABASE_URL` format and credentials.
+  </Accordion>
+  
+  <Accordion title="Cannot connect to Redis">
+    Verify Redis is running:
+    
+    ```bash
+    # Docker
+    docker compose ps redis
+    
+    # Local
+    redis-cli ping  # Should return PONG
+    ```
+  </Accordion>
+  
+  <Accordion title="TypeORM synchronization errors">
+    If tables don't auto-create, check database permissions:
+    
+    ```sql
+    GRANT ALL PRIVILEGES ON DATABASE crypto_pulse TO postgres;
+    ```
+  </Accordion>
+  
+  <Accordion title="CoinGecko API errors">
+    Verify your API key is valid and has not exceeded rate limits. Check [CoinGecko API status](https://status.coingecko.com/).
+  </Accordion>
+</AccordionGroup>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Follow the quickstart guide to make your first API calls
+  </Card>
+  
+  <Card title="Configuration" icon="gear" href="/configuration/environment-variables">
+    Learn how to customize batching, throttling, and more
+  </Card>
+  
+  <Card title="API Reference" icon="code" href="/api/overview">
+    Explore all available endpoints and parameters
+  </Card>
+  
+  <Card title="Deployment" icon="cloud" href="/deployment/docker">
+    Production deployment best practices and scaling
+  </Card>
+</CardGroup>

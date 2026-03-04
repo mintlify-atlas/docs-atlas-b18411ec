@@ -1,80 +1,280 @@
 ---
-title: "Quickstart"
-description: "Start building awesome documentation in minutes"
+title: Quickstart
+description: Get CryptoPulse running in under 5 minutes with Docker Compose
 ---
 
-## Get started in three steps
+# Quickstart Guide
 
-Get your documentation site running locally and make your first customization.
+This guide will have you querying cryptocurrency prices in under 5 minutes using Docker Compose.
 
-### Step 1: Set up your local environment
+## Prerequisites
 
-<AccordionGroup>
-  <Accordion icon="copy" title="Clone your docs locally">
-    During the onboarding process, you created a GitHub repository with your docs content if you didn't already have one. You can find a link to this repository in your [dashboard](https://dashboard.mintlify.com).
-    
-    To clone the repository locally so that you can make and preview changes to your docs, follow the [Cloning a repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) guide in the GitHub docs.
-  </Accordion>
-  <Accordion icon="rectangle-terminal" title="Start the preview server">
-    1. Install the Mintlify CLI: `npm i -g mint`
-    2. Navigate to your docs directory and run: `mint dev`
-    3. Open `http://localhost:3000` to see your docs live!
-    
-    <Tip>Your preview updates automatically as you edit files.</Tip>
-  </Accordion>
-</AccordionGroup>
+Before starting, ensure you have:
 
-### Step 2: Deploy your changes
-
-<AccordionGroup>
-  <Accordion icon="github" title="Install our GitHub app">
-    Install the Mintlify GitHub app from your [dashboard](https://dashboard.mintlify.com/settings/organization/github-app).
-    
-    Our GitHub app automatically deploys your changes to your docs site, so you don't need to manage deployments yourself.
-</Accordion>
-<Accordion icon="palette" title="Update your site name and colors">
-    For a first change, let's update the name and colors of your docs site.
-
-    1. Open `docs.json` in your editor.
-    2. Change the `"name"` field to your project name.
-    3. Update the `"colors"` to match your brand.
-    4. Save and see your changes instantly at `http://localhost:3000`.
-
-    <Tip>Try changing the primary color to see an immediate difference!</Tip>
-  </Accordion>
-</AccordionGroup>
-
-### Step 3: Go live
-
-<Accordion icon="rocket" title="Publish your docs">
-  1. Commit and push your changes.
-  2. Your docs will update and be live in moments!
-</Accordion>
-
-## Next steps
-
-Now that you have your docs running, explore these key features:
-
-<CardGroup cols={2}>
-
-<Card title="Write Content" icon="pen-to-square" href="/essentials/markdown">
-  Learn MDX syntax and start writing your documentation.
-</Card>
-
-<Card title="Customize style" icon="palette" href="/essentials/settings">
-  Make your docs match your brand perfectly.
-</Card>
-
-<Card title="Add code examples" icon="square-code" href="/essentials/code">
-  Include syntax-highlighted code blocks.
-</Card>
-
-<Card title="API documentation" icon="code" href="/api-reference/introduction">
-  Auto-generate API docs from OpenAPI specs.
-</Card>
-
-</CardGroup>
+- Docker and Docker Compose installed
+- A CoinGecko API key ([get one free here](https://www.coingecko.com/en/api))
+- Basic familiarity with REST APIs and curl/Postman
 
 <Note>
-  **Need help?** See our [full documentation](https://mintlify.com/docs) or join our [community](https://mintlify.com/community).
+This quickstart uses Docker Compose to run PostgreSQL, Redis, and the CryptoPulse API as a single stack. No local Node.js installation required!
 </Note>
+
+## Step-by-Step Setup
+
+<Steps>
+  <Step title="Clone the Repository">
+    ```bash
+    git clone <repository-url>
+    cd crypto-pulse
+    ```
+  </Step>
+
+  <Step title="Configure Environment">
+    Copy the example environment file and update it with your settings:
+    
+    ```bash
+    cp .env.example .env
+    ```
+    
+    Edit `.env` and set your CoinGecko API key:
+    
+    ```bash .env
+    PORT=3000
+    
+    ADMIN_USER=admin
+    ADMIN_PASS=secret
+    JWT_SECRET=change-me-to-a-secure-random-string
+    JWT_EXPIRES_IN=1h
+    
+    # Docker service names (postgres/redis) are used for inter-container networking
+    DATABASE_URL=postgres://postgres:postgres@postgres:5432/crypto_pulse
+    REDIS_URL=redis://redis:6379
+    
+    COINGECKO_API_KEY=your-api-key-here
+    COINGECKO_BASE_URL=https://api.coingecko.com
+    ```
+    
+    <Warning>
+    Replace `JWT_SECRET` with a strong random string in production. Never commit secrets to version control.
+    </Warning>
+  </Step>
+
+  <Step title="Start the Services">
+    Launch PostgreSQL, Redis, and the API with a single command:
+    
+    ```bash
+    docker compose up --build
+    ```
+    
+    Wait for the health checks to pass. You should see:
+    
+    ```
+    ✔ Container crypto-pulse-postgres-1  Healthy
+    ✔ Container crypto-pulse-redis-1     Healthy
+    ✔ Container crypto-pulse-api-1       Started
+    ```
+    
+    The API will be available at `http://localhost:3000`
+  </Step>
+
+  <Step title="Authenticate and Get a Token">
+    Use the credentials from your `.env` file to login:
+    
+    <CodeGroup>
+    ```bash curl
+    curl -X POST http://localhost:3000/auth/login \
+      -H "Content-Type: application/json" \
+      -d '{
+        "username": "admin",
+        "password": "secret"
+      }'
+    ```
+    
+    ```javascript fetch
+    const response = await fetch('http://localhost:3000/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: 'admin', password: 'secret' })
+    });
+    const { accessToken } = await response.json();
+    ```
+    
+    ```python requests
+    import requests
+    
+    response = requests.post(
+        'http://localhost:3000/auth/login',
+        json={'username': 'admin', 'password': 'secret'}
+    )
+    token = response.json()['accessToken']
+    ```
+    </CodeGroup>
+    
+    Response:
+    
+    ```json
+    {
+      "accessToken": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+      "tokenType": "Bearer",
+      "expiresIn": "1h"
+    }
+    ```
+    
+    Copy the `accessToken` value for the next step.
+  </Step>
+
+  <Step title="Query Your First Price">
+    Use the token to get Bitcoin's current price:
+    
+    <CodeGroup>
+    ```bash curl
+    curl http://localhost:3000/v1/price/bitcoin \
+      -H "Authorization: Bearer YOUR_TOKEN_HERE"
+    ```
+    
+    ```javascript fetch
+    const response = await fetch('http://localhost:3000/v1/price/bitcoin', {
+      headers: { 'Authorization': `Bearer ${accessToken}` }
+    });
+    const price = await response.json();
+    ```
+    
+    ```python requests
+    response = requests.get(
+        'http://localhost:3000/v1/price/bitcoin',
+        headers={'Authorization': f'Bearer {token}'}
+    )
+    price = response.json()
+    ```
+    </CodeGroup>
+    
+    Response:
+    
+    ```json
+    {
+      "coinId": "bitcoin",
+      "vsCurrency": "usd",
+      "price": 67210.45,
+      "fetchedAt": "2026-03-04T17:30:00.000Z"
+    }
+    ```
+  </Step>
+
+  <Step title="Explore the Interactive Docs">
+    Open [http://localhost:3000/docs](http://localhost:3000/docs) in your browser.
+    
+    Click the **Authorize** button in the top right, enter `Bearer YOUR_TOKEN`, and you can test all endpoints interactively.
+    
+    <Note>
+    The Swagger UI includes full request/response schemas, example values, and documented error codes for every endpoint.
+    </Note>
+  </Step>
+</Steps>
+
+## Testing Request Batching
+
+To see batching in action, send multiple requests for the same coin within the 5-second window:
+
+```bash
+# Terminal 1
+curl http://localhost:3000/v1/price/ethereum \
+  -H "Authorization: Bearer YOUR_TOKEN" &
+
+# Terminal 2 (within 5 seconds)
+curl http://localhost:3000/v1/price/ethereum \
+  -H "Authorization: Bearer YOUR_TOKEN" &
+
+# Terminal 3 (within 5 seconds)
+curl http://localhost:3000/v1/price/ethereum \
+  -H "Authorization: Bearer YOUR_TOKEN" &
+```
+
+Check the API logs - you'll see only **one** CoinGecko API call was made, but all three requests received the same response.
+
+## Querying Price History
+
+After making a few price requests, query the historical data:
+
+```bash
+curl "http://localhost:3000/v1/price/bitcoin/history?limit=5&page=1" \
+  -H "Authorization: Bearer YOUR_TOKEN"
+```
+
+Response:
+
+```json
+{
+  "coinId": "bitcoin",
+  "vsCurrency": "usd",
+  "items": [
+    { "price": 67210.45, "fetchedAt": "2026-03-04T17:30:00.000Z" },
+    { "price": 67101.22, "fetchedAt": "2026-03-04T17:25:00.000Z" }
+  ],
+  "page": 1,
+  "limit": 5,
+  "totalItems": 2,
+  "totalPages": 1,
+  "hasNextPage": false
+}
+```
+
+### Date Range Filtering
+
+Filter by date range using ISO 8601 format:
+
+```bash
+curl "http://localhost:3000/v1/price/bitcoin/history?from=2026-03-01T00:00:00Z&to=2026-03-05T00:00:00Z" \
+  -H "Authorization: Bearer YOUR_TOKEN"
+```
+
+## Common Issues
+
+<AccordionGroup>
+  <Accordion title="401 Unauthorized Error">
+    Your token may have expired (default: 1 hour). Run the login request again to get a fresh token.
+  </Accordion>
+  
+  <Accordion title="503 Service Unavailable">
+    Redis or PostgreSQL may not be healthy. Run `docker compose ps` to check service status and `docker compose logs` to see error details.
+  </Accordion>
+  
+  <Accordion title="429 Rate Limit Exceeded">
+    You've hit the throttle limit (default: 20 requests per 60 seconds). Wait a minute or adjust `THROTTLE_GLOBAL_LIMIT` in `.env`.
+  </Accordion>
+  
+  <Accordion title="404 Coin Not Found">
+    The coin ID doesn't exist in CoinGecko. Use lowercase names like `bitcoin`, `ethereum`, `cardano`. Check [CoinGecko's coin list](https://api.coingecko.com/api/v3/coins/list).
+  </Accordion>
+</AccordionGroup>
+
+## Stopping the Services
+
+When you're done:
+
+```bash
+# Stop containers but keep data
+docker compose down
+
+# Stop and remove all data (including PostgreSQL volumes)
+docker compose down -v
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Installation Guide" icon="download" href="/installation">
+    Learn about local development setup and multi-instance deployments
+  </Card>
+  
+  <Card title="API Reference" icon="code" href="/api/overview">
+    Explore all endpoints, parameters, and error codes in detail
+  </Card>
+  
+  <Card title="Configuration" icon="gear" href="/configuration/environment-variables">
+    Customize batching behavior, rate limits, and more
+  </Card>
+  
+  <Card title="Architecture" icon="sitemap" href="/concepts/architecture">
+    Deep dive into how batching and coordination work
+  </Card>
+</CardGroup>

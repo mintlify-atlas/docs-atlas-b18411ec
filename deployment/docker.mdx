@@ -1,0 +1,299 @@
+---
+title: 'Docker Deployment'
+description: 'Deploy CryptoPulse as a single instance using Docker Compose'
+---
+
+## Overview
+
+The single-instance Docker deployment runs CryptoPulse with PostgreSQL and Redis in isolated containers. This setup is ideal for development, testing, and small-scale production environments.
+
+## Prerequisites
+
+Before you begin, ensure you have:
+
+- Docker Engine 20.10+
+- Docker Compose v2.0+
+- At least 2GB of available RAM
+- Port 3000 available on your host machine
+
+## Quick Start
+
+<Steps>
+  <Step title="Clone the repository">
+    ```bash
+    git clone https://github.com/your-org/cryptopulse.git
+    cd cryptopulse
+    ```
+  </Step>
+
+  <Step title="Configure environment variables">
+    Copy the example environment file and update it with your settings:
+
+    ```bash
+    cp .env.example .env
+    ```
+
+    Edit `.env` and set the required variables:
+
+    ```bash .env
+    PORT=3000
+
+    ADMIN_USER=admin
+    ADMIN_PASS=your-secure-password
+    JWT_SECRET=your-secret-key-min-32-chars
+    JWT_EXPIRES_IN=1h
+
+    DATABASE_URL=postgres://postgres:postgres@postgres:5432/crypto_pulse
+    REDIS_URL=redis://redis:6379
+
+    COINGECKO_API_KEY=your-coingecko-api-key
+    COINGECKO_BASE_URL=https://api.coingecko.com
+    ```
+
+    <Warning>
+      Make sure to change `ADMIN_PASS` and `JWT_SECRET` to secure values before deploying to production.
+    </Warning>
+  </Step>
+
+  <Step title="Start the services">
+    Build and start all containers:
+
+    ```bash
+    docker compose up --build
+    ```
+
+    For detached mode (running in background):
+
+    ```bash
+    docker compose up --build -d
+    ```
+  </Step>
+
+  <Step title="Verify deployment">
+    Check that all services are healthy:
+
+    ```bash
+    docker compose ps
+    ```
+
+    Access the Swagger documentation at:
+    ```
+    http://localhost:3000/docs
+    ```
+  </Step>
+</Steps>
+
+## Docker Compose Configuration
+
+The `docker-compose.yml` file defines three services:
+
+<CodeGroup>
+```yaml docker-compose.yml
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: crypto_pulse
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - '5432:5432'
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U postgres -d crypto_pulse']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - '6379:6379'
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build:
+      context: .
+    env_file:
+      - .env
+    ports:
+      - '3000:3000'
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+volumes:
+  postgres-data:
+```
+</CodeGroup>
+
+### Service Breakdown
+
+**PostgreSQL Database**
+- Uses PostgreSQL 16 Alpine for minimal size
+- Persists data in a Docker volume
+- Health checks ensure the database is ready before API starts
+
+**Redis Cache**
+- Redis 7 Alpine for batching coordination and throttling
+- Required for multi-instance deployments
+- Health checks verify connectivity
+
+**API Service**
+- Built from the Dockerfile in the repository root
+- Waits for both PostgreSQL and Redis to be healthy
+- Exposes port 3000 for HTTP traffic
+
+## Dockerfile Build Process
+
+The application uses a multi-stage build for optimal image size:
+
+<CodeGroup>
+```dockerfile Dockerfile
+FROM node:22-alpine AS deps
+WORKDIR /app
+RUN corepack enable
+COPY package.json pnpm-lock.yaml ./
+RUN pnpm install
+
+FROM node:22-alpine AS builder
+WORKDIR /app
+RUN corepack enable
+COPY --from=deps /app/node_modules ./node_modules
+COPY . .
+RUN pnpm run build
+
+FROM node:22-alpine AS runner
+WORKDIR /app
+RUN corepack enable
+ENV NODE_ENV=production
+COPY package.json pnpm-lock.yaml ./
+RUN pnpm install --prod
+COPY --from=builder /app/.env ./.env
+COPY --from=builder /app/dist ./dist
+EXPOSE 3000
+CMD ["node", "dist/main.js"]
+```
+</CodeGroup>
+
+**Build Stages:**
+1. **deps**: Installs all dependencies
+2. **builder**: Compiles TypeScript to JavaScript
+3. **runner**: Production image with only runtime dependencies
+
+## Managing the Deployment
+
+### View Logs
+
+<CodeGroup>
+```bash All Services
+docker compose logs -f
+```
+
+```bash API Only
+docker compose logs -f api
+```
+
+```bash PostgreSQL Only
+docker compose logs -f postgres
+```
+</CodeGroup>
+
+### Stop Services
+
+```bash
+docker compose down
+```
+
+To also remove volumes (deletes all data):
+
+```bash
+docker compose down -v
+```
+
+### Restart a Service
+
+```bash
+docker compose restart api
+```
+
+### Rebuild After Code Changes
+
+```bash
+docker compose up --build api
+```
+
+## Accessing Services
+
+| Service | URL | Purpose |
+|---------|-----|----------|
+| API | `http://localhost:3000` | Main API endpoints |
+| Swagger UI | `http://localhost:3000/docs` | Interactive API documentation |
+| PostgreSQL | `localhost:5432` | Database connection (for debugging) |
+| Redis | `localhost:6379` | Redis connection (for debugging) |
+
+## Data Persistence
+
+PostgreSQL data is stored in a Docker volume named `postgres-data`. This ensures your data persists across container restarts.
+
+To backup your database:
+
+```bash
+docker compose exec postgres pg_dump -U postgres crypto_pulse > backup.sql
+```
+
+To restore from backup:
+
+```bash
+cat backup.sql | docker compose exec -T postgres psql -U postgres crypto_pulse
+```
+
+## Troubleshooting
+
+### API Won't Start
+
+Check that PostgreSQL and Redis are healthy:
+```bash
+docker compose ps
+```
+
+Both should show "healthy" status. If not, check their logs:
+```bash
+docker compose logs postgres
+docker compose logs redis
+```
+
+### Port Already in Use
+
+If port 3000 is already in use, modify the port mapping in `docker-compose.yml`:
+
+```yaml
+api:
+  ports:
+    - '8080:3000'  # Use port 8080 on host instead
+```
+
+### Connection Errors
+
+<Warning>
+  When running inside Docker Compose, always use service names (e.g., `postgres`, `redis`) in connection URLs, not `localhost`.
+</Warning>
+
+Correct `.env` configuration:
+```bash
+DATABASE_URL=postgres://postgres:postgres@postgres:5432/crypto_pulse
+REDIS_URL=redis://redis:6379
+```
+
+## Next Steps
+
+- [Multi-Instance Deployment](/deployment/multi-instance) - Scale horizontally with load balancing
+- [Production Best Practices](/deployment/production) - Security and monitoring for production
+- [API Reference](/api/authentication) - Explore available endpoints

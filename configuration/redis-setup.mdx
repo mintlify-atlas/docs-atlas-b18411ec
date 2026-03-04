@@ -1,0 +1,310 @@
+---
+title: 'Redis Setup'
+description: 'Redis configuration for batching coordination and rate limiting'
+---
+
+## Overview
+
+CryptoPulse uses Redis for two critical distributed operations:
+
+1. **Request Batching Coordination** - Synchronizes batch counters and results across multiple API instances
+2. **Rate Limiting** - Stores throttle counters shared across all instances
+
+Redis enables CryptoPulse to scale horizontally while maintaining consistent batching and rate limiting behavior.
+
+## Redis Requirements
+
+- Redis 6.0 or higher
+- Network accessibility from your application
+- Persistent storage recommended for production
+
+## Connection Configuration
+
+### Connection String Format
+
+Configure Redis via the `REDIS_URL` environment variable:
+
+```bash
+REDIS_URL=redis://host:port
+```
+
+### Local Development
+
+For local development with Redis running on your machine:
+
+```bash
+REDIS_URL=redis://localhost:6379
+```
+
+### Docker Compose
+
+When running inside Docker Compose, use the service name:
+
+```bash
+REDIS_URL=redis://redis:6379
+```
+
+### Authentication
+
+If your Redis instance requires authentication:
+
+```bash
+REDIS_URL=redis://:password@host:port
+```
+
+## Redis Module Configuration
+
+CryptoPulse creates two Redis connections (from `src/redis/redis.module.ts`):
+
+```typescript
+@Module({
+  providers: [
+    {
+      provide: REDIS_PUBLISHER,
+      inject: [ConfigService],
+      useFactory: (config: ConfigService) => {
+        return new Redis(config.getOrThrow<string>('REDIS_URL'));
+      },
+    },
+    {
+      provide: REDIS_SUBSCRIBER,
+      inject: [ConfigService],
+      useFactory: (config: ConfigService) => {
+        return new Redis(config.getOrThrow<string>('REDIS_URL'));
+      },
+    },
+  ],
+  exports: [REDIS_PUBLISHER, REDIS_SUBSCRIBER],
+})
+```
+
+### Why Two Connections?
+
+- **Publisher:** Used for writing batch counters, publishing batch results, and managing batch coordination
+- **Subscriber:** Dedicated to listening for batch completion events via Redis Pub/Sub
+
+Redis requires separate connections for publish and subscribe operations.
+
+## Usage: Request Batching
+
+### Batch Coordination
+
+When a price request arrives, the service uses Redis to coordinate batching:
+
+```typescript
+const batchKey = `batch:${coinId}`;
+const count = await this.publisher.incr(batchKey);
+
+if (count === 1) {
+  // First request: set expiry
+  await this.publisher.pexpire(batchKey, this.batchWindowMs + 2000);
+}
+
+if (count >= this.batchThreshold) {
+  // Threshold reached: flush immediately
+  void this.attemptFlush(coinId);
+}
+```
+
+### Batch Flushing
+
+When a batch is ready to flush:
+
+```typescript
+const deleted = await this.publisher.del(`batch:${coinId}`);
+
+if (deleted === 0) {
+  return; // Another instance already flushed
+}
+
+// Fetch from CoinGecko and publish result
+const result = await this.coinGeckoService.fetchCurrentPrice(coinId);
+await this.publisher.publish(`price:${coinId}`, JSON.stringify(result));
+```
+
+### Batch Result Distribution
+
+All instances subscribe to batch results:
+
+```typescript
+await this.subscriber.psubscribe('price:*');
+
+this.subscriber.on('pmessage', (_pattern, channel, message) => {
+  const coinId = channel.slice('price:'.length);
+  this.settleWaiters(coinId, JSON.parse(message));
+});
+```
+
+### Redis Keys for Batching
+
+| Key Pattern | Type | Purpose | TTL |
+|-------------|------|---------|-----|
+| `batch:{coinId}` | String (counter) | Tracks pending requests for a coin | `BATCH_WINDOW_MS + 2s` |
+| `price:{coinId}` | Pub/Sub channel | Broadcasts batch results to all instances | N/A |
+
+## Usage: Rate Limiting
+
+CryptoPulse uses the `@nest-lab/throttler-storage-redis` package for distributed rate limiting:
+
+```typescript
+ThrottlerModule.forRootAsync({
+  inject: [ConfigService],
+  useFactory: (configService: ConfigService) => ({
+    throttlers: [
+      {
+        name: 'default',
+        ttl: configService.get<number>('THROTTLE_TTL_MS') ?? 60000,
+        limit: configService.get<number>('THROTTLE_GLOBAL_LIMIT') ?? 20,
+      },
+    ],
+    storage: new ThrottlerStorageRedisService(
+      configService.getOrThrow<string>('REDIS_URL')
+    ),
+  }),
+})
+```
+
+### Rate Limit Configuration
+
+- **Global limit:** `THROTTLE_GLOBAL_LIMIT` requests per `THROTTLE_TTL_MS`
+- **Login limit:** `THROTTLE_LOGIN_LIMIT` requests per `THROTTLE_TTL_MS`
+- Rate limits are shared across all API instances via Redis
+
+### Redis Keys for Throttling
+
+The throttler storage creates keys like:
+
+```
+throttler:{hash}:{tracker}
+```
+
+These keys track request counts per client and automatically expire based on `THROTTLE_TTL_MS`.
+
+## Multi-Instance Architecture
+
+Redis enables horizontal scaling:
+
+```
+                    ┌──────────────┐
+                    │    Nginx     │
+                    │  (Load Bal)  │
+                    └──────┬───────┘
+                           │
+              ┌────────────┴────────────┐
+              │                         │
+         ┌────▼────┐               ┌────▼────┐
+         │  API 1  │               │  API 2  │
+         └────┬────┘               └────┬────┘
+              │                         │
+              └────────┬────────────────┘
+                       │
+                  ┌────▼────┐
+                  │  Redis  │
+                  │ (Shared) │
+                  └─────────┘
+```
+
+- Both API instances share the same Redis
+- Batching remains efficient: only one instance fetches from CoinGecko
+- Rate limits apply consistently across all instances
+
+## Verifying Redis Connection
+
+When the application starts, check logs for:
+
+```
+[RedisModule] Initialized
+```
+
+On shutdown:
+
+```
+[RedisModule] Closing Redis connections
+```
+
+### Testing Redis Connectivity
+
+Manually test Redis connection:
+
+```bash
+redis-cli -u redis://localhost:6379 PING
+# Expected: PONG
+```
+
+### Monitoring Batch Keys
+
+Watch batch coordination in real-time:
+
+```bash
+redis-cli -u redis://localhost:6379 MONITOR
+```
+
+You'll see commands like:
+
+```
+INCR batch:bitcoin
+PEXPIRE batch:bitcoin 7000
+DEL batch:bitcoin
+PUBLISH price:bitcoin {"ok":true,"price":50000,...}
+```
+
+## Connection Pooling
+
+The `ioredis` client automatically manages connection pooling. Each Redis instance uses:
+
+- **Reconnection:** Automatic with exponential backoff
+- **Keep-alive:** Enabled by default
+- **Max retry time:** 30 seconds
+
+## Error Handling
+
+### Batch Coordination Failure
+
+If Redis is unavailable during batch admission:
+
+```typescript
+throw new ServiceUnavailableException('Batch coordination unavailable');
+```
+
+HTTP Status: `503 Service Unavailable`
+
+### Throttler Failure
+
+If Redis is unavailable during rate limiting:
+
+```typescript
+throw new ServiceUnavailableException('Rate limiter backend unavailable');
+```
+
+HTTP Status: `503 Service Unavailable`
+
+## Production Recommendations
+
+<Warning>
+  Redis persistence should be enabled in production to prevent data loss on restarts.
+</Warning>
+
+### Redis Configuration
+
+```conf
+# Append-only file persistence
+appendonly yes
+appendfsync everysec
+
+# RDB snapshots
+save 900 1
+save 300 10
+save 60 10000
+
+# Memory management
+maxmemory 256mb
+maxmemory-policy allkeys-lru
+```
+
+### High Availability
+
+For production deployments, consider:
+
+- **Redis Sentinel** for automatic failover
+- **Redis Cluster** for horizontal scaling
+- **AWS ElastiCache** or **Azure Cache for Redis** for managed solutions

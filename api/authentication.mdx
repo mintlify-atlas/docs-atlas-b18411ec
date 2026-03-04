@@ -1,0 +1,325 @@
+---
+title: 'Authentication'
+description: 'How to authenticate with the CryptoPulse API using JWT tokens'
+---
+
+## Overview
+
+The CryptoPulse API uses JWT (JSON Web Token) bearer authentication to protect price endpoints. Authentication is required for all `/v1/price/*` endpoints.
+
+## Authentication Flow
+
+1. **Login**: Send credentials to `/auth/login`
+2. **Receive Token**: Get a JWT access token in the response
+3. **Use Token**: Include token in `Authorization` header for protected endpoints
+4. **Token Expiry**: Request a new token when the current one expires
+
+## Login Endpoint
+
+### Request
+
+**POST** `/auth/login`
+
+```bash
+curl -X POST http://localhost:3000/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{
+    "username": "admin",
+    "password": "secret"
+  }'
+```
+
+### Request Body
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| username | string | Yes | Admin username (configured via `ADMIN_USER` env var) |
+| password | string | Yes | Admin password (configured via `ADMIN_PASS` env var) |
+
+### Response
+
+**Status**: `200 OK`
+
+```json
+{
+  "accessToken": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJhZG1pbiIsInVzZXJuYW1lIjoiYWRtaW4ifQ.signature",
+  "tokenType": "Bearer",
+  "expiresIn": "1h"
+}
+```
+
+### Response Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| accessToken | string | JWT token to use for authentication |
+| tokenType | string | Always "Bearer" |
+| expiresIn | string | Token validity duration (e.g., "1h", "30m") |
+
+## Token Format
+
+The API issues standard JWT tokens with the following structure:
+
+### Header
+```json
+{
+  "alg": "HS256",
+  "typ": "JWT"
+}
+```
+
+### Payload
+```json
+{
+  "sub": "admin",
+  "username": "admin",
+  "iat": 1709093700,
+  "exp": 1709097300
+}
+```
+
+### Signature
+The token is signed using the `JWT_SECRET` environment variable with HMAC SHA256.
+
+## Using Bearer Tokens
+
+To access protected endpoints, include the JWT token in the `Authorization` header:
+
+### Header Format
+
+```
+Authorization: Bearer <your-access-token>
+```
+
+### Example Request
+
+```bash
+curl -X GET http://localhost:3000/v1/price/bitcoin \
+  -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+```
+
+### Code Examples
+
+<CodeGroup>
+
+```javascript Node.js
+const axios = require('axios');
+
+// Login
+const loginResponse = await axios.post('http://localhost:3000/auth/login', {
+  username: 'admin',
+  password: 'secret'
+});
+
+const { accessToken } = loginResponse.data;
+
+// Use token for authenticated request
+const priceResponse = await axios.get('http://localhost:3000/v1/price/bitcoin', {
+  headers: {
+    'Authorization': `Bearer ${accessToken}`
+  }
+});
+
+console.log(priceResponse.data);
+```
+
+```python Python
+import requests
+
+# Login
+login_response = requests.post(
+    'http://localhost:3000/auth/login',
+    json={'username': 'admin', 'password': 'secret'}
+)
+
+access_token = login_response.json()['accessToken']
+
+# Use token for authenticated request
+price_response = requests.get(
+    'http://localhost:3000/v1/price/bitcoin',
+    headers={'Authorization': f'Bearer {access_token}'}
+)
+
+print(price_response.json())
+```
+
+```go Go
+package main
+
+import (
+    "bytes"
+    "encoding/json"
+    "fmt"
+    "net/http"
+)
+
+func main() {
+    // Login
+    loginBody := map[string]string{
+        "username": "admin",
+        "password": "secret",
+    }
+    loginJSON, _ := json.Marshal(loginBody)
+    
+    loginResp, _ := http.Post(
+        "http://localhost:3000/auth/login",
+        "application/json",
+        bytes.NewBuffer(loginJSON),
+    )
+    
+    var loginData map[string]interface{}
+    json.NewDecoder(loginResp.Body).Decode(&loginData)
+    accessToken := loginData["accessToken"].(string)
+    
+    // Use token for authenticated request
+    req, _ := http.NewRequest(
+        "GET",
+        "http://localhost:3000/v1/price/bitcoin",
+        nil,
+    )
+    req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", accessToken))
+    
+    client := &http.Client{}
+    resp, _ := client.Do(req)
+    
+    var priceData map[string]interface{}
+    json.NewDecoder(resp.Body).Decode(&priceData)
+    fmt.Println(priceData)
+}
+```
+
+</CodeGroup>
+
+## Token Expiry
+
+### Default Expiration
+
+Tokens expire after **1 hour** by default. This can be configured using the `JWT_EXPIRES_IN` environment variable.
+
+### Configuration Options
+
+The `expiresIn` field supports various time formats:
+- `"1h"` - 1 hour
+- `"30m"` - 30 minutes
+- `"7d"` - 7 days
+- `"3600"` - 3600 seconds
+
+### Handling Expiration
+
+When a token expires, protected endpoints return a `401 Unauthorized` error:
+
+```json
+{
+  "statusCode": 401,
+  "message": "Invalid or expired token",
+  "error": "Unauthorized"
+}
+```
+
+**Solution**: Request a new token by calling `/auth/login` again.
+
+## Rate Limiting
+
+The login endpoint has stricter rate limits to prevent brute force attacks:
+
+- **Limit**: 5 requests per 60 seconds (configurable via `THROTTLE_LOGIN_LIMIT`)
+- **Window**: 60 seconds (configurable via `THROTTLE_TTL_MS`)
+
+### Rate Limit Error
+
+```json
+{
+  "statusCode": 429,
+  "message": "ThrottlerException: Too Many Requests",
+  "error": "Too Many Requests"
+}
+```
+
+## Error Responses
+
+### Invalid Credentials
+
+**Status**: `401 Unauthorized`
+
+```json
+{
+  "statusCode": 401,
+  "message": "Invalid credentials",
+  "error": "Unauthorized"
+}
+```
+
+### Missing Authorization Header
+
+**Status**: `401 Unauthorized`
+
+```json
+{
+  "statusCode": 401,
+  "message": "Missing Authorization header",
+  "error": "Unauthorized"
+}
+```
+
+### Invalid Token Format
+
+**Status**: `401 Unauthorized`
+
+```json
+{
+  "statusCode": 401,
+  "message": "Authorization header must use Bearer token",
+  "error": "Unauthorized"
+}
+```
+
+### Malformed Request Body
+
+**Status**: `400 Bad Request`
+
+```json
+{
+  "statusCode": 400,
+  "message": ["username should not be empty", "password must be a string"],
+  "error": "Bad Request"
+}
+```
+
+## Security Best Practices
+
+<Warning>
+  Never expose your `JWT_SECRET`, `ADMIN_USER`, or `ADMIN_PASS` environment variables in client-side code or public repositories.
+</Warning>
+
+### Recommendations
+
+1. **Store tokens securely**: Use secure storage mechanisms (e.g., httpOnly cookies, secure localStorage)
+2. **Use HTTPS**: Always use HTTPS in production to prevent token interception
+3. **Rotate secrets**: Regularly rotate your `JWT_SECRET` and admin credentials
+4. **Monitor failed logins**: Track failed authentication attempts
+5. **Implement token refresh**: Consider implementing refresh tokens for long-lived sessions
+6. **Set appropriate expiry**: Balance security and user experience with token expiration times
+
+## Environment Configuration
+
+Authentication behavior is controlled by these environment variables:
+
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `ADMIN_USER` | Yes | - | Login username |
+| `ADMIN_PASS` | Yes | - | Login password |
+| `JWT_SECRET` | Yes | - | Secret key for signing JWT tokens |
+| `JWT_EXPIRES_IN` | No | `1h` | Token expiration time |
+| `THROTTLE_TTL_MS` | No | `60000` | Rate limit window in milliseconds |
+| `THROTTLE_LOGIN_LIMIT` | No | `5` | Max login attempts per window |
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Get Price" icon="dollar-sign" href="/api/endpoints/get-price">
+    Use your token to fetch cryptocurrency prices
+  </Card>
+  <Card title="Price History" icon="clock" href="/api/endpoints/get-history">
+    Query historical price data
+  </Card>
+</CardGroup>

@@ -1,0 +1,142 @@
+---
+title: 'API Overview'
+description: 'Introduction to the CryptoPulse API with endpoints, versioning, and Swagger documentation'
+---
+
+## Introduction
+
+The CryptoPulse API is a NestJS-based service that provides cryptocurrency price data with intelligent request batching, persistence, and JWT authentication. The API is designed to handle multiple concurrent instances with Redis-backed coordination.
+
+## Base URL
+
+The default base URL for the API is:
+
+```
+http://localhost:3000
+```
+
+In production environments, this will be your deployed domain.
+
+## API Version
+
+Current API version: **v1.0.0**
+
+Price endpoints are versioned with the `/v1` prefix:
+- `/v1/price/:coinId`
+- `/v1/price/:coinId/history`
+
+## Available Endpoints
+
+### Authentication
+
+| Method | Endpoint | Description | Auth Required |
+|--------|----------|-------------|---------------|
+| POST | `/auth/login` | Authenticate and receive JWT token | No |
+
+### Price Data
+
+| Method | Endpoint | Description | Auth Required |
+|--------|----------|-------------|---------------|
+| GET | `/v1/price/:coinId` | Get current USD price for a coin (batched) | Yes |
+| GET | `/v1/price/:coinId/history` | Get paginated historical prices | Yes |
+
+## Key Features
+
+### Request Batching
+
+The API automatically batches requests for the same coin to optimize upstream API calls:
+- **Batch Window**: 5 seconds (configurable)
+- **Early Flush Threshold**: 3 pending requests (configurable)
+- Multiple requests for the same coin are served from a single upstream call
+
+### Rate Limiting
+
+Built-in throttling protects the API from abuse:
+- **Global Limit**: 20 requests per 60 seconds
+- **Login Limit**: 5 requests per 60 seconds
+- Redis-backed counters work across multiple instances
+
+### Data Persistence
+
+All successful price fetches are automatically saved to PostgreSQL, enabling:
+- Historical price tracking
+- Date range queries
+- Paginated results
+
+## Interactive Documentation
+
+Swagger/OpenAPI documentation is available at:
+
+```
+http://localhost:3000/docs
+```
+
+The interactive documentation includes:
+- Complete endpoint specifications
+- Request/response examples
+- Error code documentation
+- Built-in "Try it out" functionality
+- Bearer token authorization UI
+
+### Using Swagger Docs
+
+1. Navigate to `http://localhost:3000/docs`
+2. Use `POST /auth/login` to get an access token
+3. Click the **Authorize** button at the top
+4. Enter: `Bearer <your-access-token>`
+5. Test protected endpoints directly in the browser
+
+## Response Format
+
+All API responses follow a consistent JSON format:
+
+### Success Response
+
+```json
+{
+  "coinId": "bitcoin",
+  "vsCurrency": "usd",
+  "price": 67210.45,
+  "fetchedAt": "2026-02-28T03:55:00.000Z"
+}
+```
+
+### Error Response
+
+```json
+{
+  "statusCode": 401,
+  "message": "Invalid credentials",
+  "error": "Unauthorized"
+}
+```
+
+## Common Status Codes
+
+| Code | Status | Meaning |
+|------|--------|--------|
+| 200 | OK | Request successful |
+| 400 | Bad Request | Invalid request parameters |
+| 401 | Unauthorized | Missing or invalid authentication |
+| 404 | Not Found | Coin not found |
+| 429 | Too Many Requests | Rate limit exceeded |
+| 502 | Bad Gateway | Upstream service error |
+| 503 | Service Unavailable | Backend unavailable (Redis/database) |
+| 504 | Gateway Timeout | Request timeout |
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Authentication" icon="key" href="/api/authentication">
+    Learn how to authenticate and use JWT tokens
+  </Card>
+  <Card title="Get Price" icon="dollar-sign" href="/api/endpoints/get-price">
+    Fetch current cryptocurrency prices
+  </Card>
+  <Card title="Price History" icon="clock" href="/api/endpoints/get-history">
+    Query historical price data
+  </Card>
+  <Card title="Error Handling" icon="triangle-exclamation" href="/api/error-codes">
+    Handle API errors gracefully
+  </Card>
+</CardGroup>

@@ -1,0 +1,204 @@
+---
+title: 'Database Setup'
+description: 'PostgreSQL configuration and schema setup for CryptoPulse'
+---
+
+## Overview
+
+CryptoPulse uses PostgreSQL for persisting cryptocurrency price snapshots. TypeORM handles the database connection and entity management.
+
+## PostgreSQL Requirements
+
+- PostgreSQL 12 or higher
+- A dedicated database (e.g., `crypto_pulse`)
+- Network accessibility from your application
+
+## Connection Configuration
+
+### Connection String Format
+
+Configure the database connection via the `DATABASE_URL` environment variable:
+
+```bash
+DATABASE_URL=postgres://username:password@host:port/database
+```
+
+### Local Development
+
+For local development with PostgreSQL running on your machine:
+
+```bash
+DATABASE_URL=postgres://postgres:postgres@localhost:5432/crypto_pulse
+```
+
+### Docker Compose
+
+When running inside Docker Compose, use the service name instead of `localhost`:
+
+```bash
+DATABASE_URL=postgres://postgres:postgres@postgres:5432/crypto_pulse
+```
+
+## TypeORM Configuration
+
+The application configures TypeORM with the following settings (from `src/app.module.ts:36`):
+
+```typescript
+TypeOrmModule.forRootAsync({
+  inject: [ConfigService],
+  useFactory: (configService: ConfigService) => {
+    const isTest = configService.get<string>('NODE_ENV') === 'test';
+
+    return {
+      type: 'postgres',
+      url: configService.getOrThrow<string>('DATABASE_URL'),
+      entities: [PriceRecord],
+      synchronize: true,
+      retryAttempts: isTest ? 1 : 10,
+      retryDelay: isTest ? 0 : 3000,
+      extra: {
+        max: 10,           // Maximum pool size
+        min: 2,            // Minimum pool size
+        idleTimeoutMillis: 30000,
+        connectionTimeoutMillis: 5000,
+      },
+    };
+  },
+})
+```
+
+### Connection Pool Settings
+
+- **Max connections:** 10
+- **Min connections:** 2
+- **Idle timeout:** 30 seconds
+- **Connection timeout:** 5 seconds
+- **Retry attempts:** 10 (1 in test mode)
+- **Retry delay:** 3 seconds (0 in test mode)
+
+## Database Schema
+
+### PriceRecord Entity
+
+The `price_records` table stores all cryptocurrency price snapshots:
+
+```typescript
+@Entity('price_records')
+@Index('idx_price_records_coin_fetched', ['coinId', 'fetchedAt'])
+export class PriceRecord {
+  @PrimaryGeneratedColumn({ type: 'bigint' })
+  id!: string;
+
+  @Column({ name: 'coin_id', type: 'text' })
+  coinId!: string;
+
+  @Column({ name: 'vs_currency', type: 'text', default: 'usd' })
+  vsCurrency!: string;
+
+  @Column({
+    type: 'numeric',
+    precision: 24,
+    scale: 10,
+    transformer: {
+      to: (value: number) => value,
+      from: (value: string) => Number(value),
+    },
+  })
+  price!: number;
+
+  @Column({ name: 'fetched_at', type: 'timestamptz' })
+  fetchedAt!: Date;
+}
+```
+
+### Table Structure
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | `bigint` | Auto-incrementing primary key |
+| `coin_id` | `text` | Cryptocurrency identifier (e.g., `bitcoin`, `ethereum`) |
+| `vs_currency` | `text` | Target currency (default: `usd`) |
+| `price` | `numeric(24,10)` | Price value with high precision |
+| `fetched_at` | `timestamptz` | Timestamp when the price was fetched (timezone-aware) |
+
+### Indexes
+
+**Composite Index:** `idx_price_records_coin_fetched` on `(coin_id, fetched_at)`
+
+This index optimizes queries for the price history endpoint, which filters by `coin_id` and optionally by date range, ordered by `fetched_at` descending.
+
+## Schema Synchronization
+
+<Warning>
+  The application uses `synchronize: true` in TypeORM configuration, which automatically creates/updates tables on startup. This is convenient for development but **should be disabled in production**. Use migrations instead for production deployments.
+</Warning>
+
+With `synchronize: true`, the schema is automatically created when the application starts. No manual migration commands are required for development.
+
+## Manual Database Setup
+
+If you prefer to create the database manually:
+
+```sql
+CREATE DATABASE crypto_pulse;
+
+\c crypto_pulse
+
+CREATE TABLE price_records (
+  id BIGSERIAL PRIMARY KEY,
+  coin_id TEXT NOT NULL,
+  vs_currency TEXT NOT NULL DEFAULT 'usd',
+  price NUMERIC(24, 10) NOT NULL,
+  fetched_at TIMESTAMPTZ NOT NULL
+);
+
+CREATE INDEX idx_price_records_coin_fetched 
+  ON price_records (coin_id, fetched_at);
+```
+
+## Querying Price History
+
+The price history endpoint uses TypeORM's QueryBuilder for efficient pagination:
+
+```typescript
+const qb = this.priceRecordRepository
+  .createQueryBuilder('record')
+  .where('record.coinId = :coinId', { coinId })
+  .andWhere('record.vsCurrency = :vsCurrency', { vsCurrency: 'usd' })
+  .orderBy('record.fetchedAt', 'DESC');
+
+if (query.from) {
+  qb.andWhere('record.fetchedAt >= :from', { from: query.from });
+}
+
+if (query.to) {
+  qb.andWhere('record.fetchedAt <= :to', { to: query.to });
+}
+
+const items = await qb
+  .take(limit)
+  .skip((page - 1) * limit)
+  .getMany();
+```
+
+## Verifying Database Connection
+
+When the application starts, TypeORM will:
+
+1. Attempt to connect to PostgreSQL using `DATABASE_URL`
+2. Retry up to 10 times with a 3-second delay between attempts
+3. Create or synchronize the `price_records` table
+4. Log connection status
+
+Check application logs for:
+
+```
+[TypeOrmModule] Successfully connected to database
+```
+
+If the connection fails, verify:
+
+- PostgreSQL is running
+- Connection credentials are correct
+- Network/firewall allows the connection
+- Database exists

@@ -1,0 +1,194 @@
+---
+title: 'GET /v1/price/:coinId/history'
+description: 'Get paginated historical prices for a coin'
+---
+
+## Overview
+
+Returns paginated historical price data for a specified cryptocurrency. Supports optional date range filters and page-based pagination. Results are ordered by newest first.
+
+## Endpoint
+
+```
+GET /v1/price/:coinId/history
+```
+
+## Authentication
+
+**Required**: Bearer token authentication
+
+Include the JWT token from the login endpoint in the Authorization header:
+
+```
+Authorization: Bearer <your_access_token>
+```
+
+## Path Parameters
+
+<ParamField path="coinId" type="string" required>
+  CoinGecko coin identifier (lowercase letters, numbers, and hyphens)
+  
+  Example: `bitcoin`, `ethereum`, `binancecoin`
+</ParamField>
+
+## Query Parameters
+
+<ParamField query="from" type="string" optional>
+  Start date for filtering results (ISO 8601 format)
+  
+  Example: `2026-01-01T00:00:00.000Z`
+</ParamField>
+
+<ParamField query="to" type="string" optional>
+  End date for filtering results (ISO 8601 format)
+  
+  Example: `2026-12-31T23:59:59.999Z`
+</ParamField>
+
+<ParamField query="limit" type="integer" required>
+  Number of items per page
+  
+  - **Minimum**: 1
+  - **Maximum**: 100
+  - **Default**: 20
+  
+  Example: `20`
+</ParamField>
+
+<ParamField query="page" type="integer" required>
+  Page number (1-based)
+  
+  - **Minimum**: 1
+  - **Default**: 1
+  
+  Example: `1`
+</ParamField>
+
+## Response
+
+<ResponseField name="coinId" type="string">
+  The cryptocurrency identifier
+  
+  Example: `bitcoin`
+</ResponseField>
+
+<ResponseField name="vsCurrency" type="string">
+  The currency the prices are denominated in (always "usd")
+  
+  Example: `usd`
+</ResponseField>
+
+<ResponseField name="items" type="array">
+  Array of historical price records
+  
+  <ResponseField name="items[].price" type="number">
+    USD price at the time of fetch
+    
+    Example: `67210.45`
+  </ResponseField>
+  
+  <ResponseField name="items[].fetchedAt" type="string">
+    ISO 8601 timestamp when the price was recorded
+    
+    Example: `2026-02-28T03:55:00.000Z`
+  </ResponseField>
+</ResponseField>
+
+<ResponseField name="page" type="integer">
+  Current page number (1-based)
+  
+  Example: `1`
+</ResponseField>
+
+<ResponseField name="limit" type="integer">
+  Number of items per page
+  
+  Example: `20`
+</ResponseField>
+
+<ResponseField name="totalItems" type="integer">
+  Total number of items matching the query
+  
+  Example: `57`
+</ResponseField>
+
+<ResponseField name="totalPages" type="integer">
+  Total number of pages available
+  
+  Example: `3`
+</ResponseField>
+
+<ResponseField name="hasNextPage" type="boolean">
+  Whether there are more pages available
+  
+  Example: `true`
+</ResponseField>
+
+## Example Request
+
+### Basic Request
+
+```bash
+curl -X GET "http://localhost:3000/v1/price/bitcoin/history?limit=20&page=1" \
+  -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+```
+
+### With Date Range Filter
+
+```bash
+curl -X GET "http://localhost:3000/v1/price/bitcoin/history?from=2026-01-01T00:00:00.000Z&to=2026-01-31T23:59:59.999Z&limit=50&page=1" \
+  -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+```
+
+## Example Response
+
+```json
+{
+  "coinId": "bitcoin",
+  "vsCurrency": "usd",
+  "items": [
+    {
+      "price": 67210.45,
+      "fetchedAt": "2026-02-28T03:55:00.000Z"
+    },
+    {
+      "price": 67101.22,
+      "fetchedAt": "2026-02-28T03:50:00.000Z"
+    }
+  ],
+  "page": 1,
+  "limit": 20,
+  "totalItems": 57,
+  "totalPages": 3,
+  "hasNextPage": true
+}
+```
+
+## Error Codes
+
+| Status Code | Description |
+|-------------|-------------|
+| `200` | History page returned successfully |
+| `400` | Invalid query parameters (coinId format, date format, limit/page bounds, or from > to) |
+| `401` | Missing or invalid bearer token |
+| `429` | Rate limit exceeded |
+| `503` | Rate limiter backend unavailable |
+
+## Error Response Format
+
+All errors follow this format:
+
+```json
+{
+  "statusCode": 400,
+  "message": "limit must not be greater than 100",
+  "error": "Bad Request"
+}
+```
+
+## Pagination Notes
+
+- Results are always ordered by **newest first** (most recent prices first)
+- Use `hasNextPage` to determine if more pages are available
+- Calculate total pages using: `totalPages = Math.ceil(totalItems / limit)`
+- To fetch the next page, increment the `page` parameter

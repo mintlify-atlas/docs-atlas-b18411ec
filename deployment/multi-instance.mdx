@@ -1,0 +1,466 @@
+---
+title: 'Multi-Instance Deployment'
+description: 'Deploy CryptoPulse with multiple API instances behind an Nginx load balancer'
+---
+
+## Overview
+
+The multi-instance deployment runs multiple CryptoPulse API servers behind an Nginx load balancer. This setup provides:
+
+- **High availability**: If one instance fails, others continue serving requests
+- **Horizontal scaling**: Distribute load across multiple instances
+- **Zero-downtime deployments**: Rolling updates without service interruption
+- **Shared state**: Redis coordinates batching and throttling across all instances
+
+## Architecture
+
+```
+┌─────────┐
+│  Client │
+└────┬────┘
+     │
+     ▼
+┌─────────────┐
+│   Nginx     │  Port 3000 (Load Balancer)
+│  (Port 80)  │
+└──────┬──────┘
+       │
+   ┌───┴────┐
+   ▼        ▼
+┌─────┐  ┌─────┐
+│ API1│  │ API2│  Both on internal port 3000
+└──┬──┘  └──┬──┘
+   │        │
+   └────┬───┘
+        │
+    ┌───┴────┐
+    ▼        ▼
+┌──────┐  ┌─────┐
+│ PG   │  │Redis│  Shared database and cache
+└──────┘  └─────┘
+```
+
+## Prerequisites
+
+- Docker Engine 20.10+
+- Docker Compose v2.0+
+- At least 4GB of available RAM
+- Port 3000 available on your host machine
+
+## Deployment Steps
+
+<Steps>
+  <Step title="Configure environment">
+    Copy and configure your environment file:
+
+    ```bash
+    cp .env.example .env
+    ```
+
+    Update critical settings:
+
+    ```bash .env
+    PORT=3000
+
+    ADMIN_USER=admin
+    ADMIN_PASS=your-secure-password
+    JWT_SECRET=your-secret-key-min-32-chars
+    JWT_EXPIRES_IN=1h
+
+    # Use service names for Docker networking
+    DATABASE_URL=postgres://postgres:postgres@postgres:5432/crypto_pulse
+    REDIS_URL=redis://redis:6379
+
+    COINGECKO_API_KEY=your-coingecko-api-key
+
+    # Adjust throttling for multiple instances
+    THROTTLE_GLOBAL_LIMIT=20
+    THROTTLE_LOGIN_LIMIT=5
+    ```
+  </Step>
+
+  <Step title="Start multi-instance deployment">
+    Use the multi-instance compose file:
+
+    ```bash
+    docker compose -f docker-compose.multi.yml up --build -d
+    ```
+
+    This starts:
+    - 1 PostgreSQL instance
+    - 1 Redis instance
+    - 2 API instances (api1, api2)
+    - 1 Nginx load balancer
+  </Step>
+
+  <Step title="Verify all instances are running">
+    Check service status:
+
+    ```bash
+    docker compose -f docker-compose.multi.yml ps
+    ```
+
+    All services should show "Up" status.
+  </Step>
+
+  <Step title="Test load balancing">
+    Access the API through Nginx:
+
+    ```bash
+    curl http://localhost:3000/docs
+    ```
+
+    The Swagger UI should be accessible, with requests distributed between api1 and api2.
+  </Step>
+</Steps>
+
+## Multi-Instance Configuration
+
+<CodeGroup>
+```yaml docker-compose.multi.yml
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: crypto_pulse
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - '5432:5432'
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U postgres -d crypto_pulse']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - '6379:6379'
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api1:
+    build:
+      context: .
+    env_file:
+      - .env
+    environment:
+      PORT: 3000
+      DATABASE_URL: postgres://postgres:postgres@postgres:5432/crypto_pulse
+      REDIS_URL: redis://redis:6379
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  api2:
+    build:
+      context: .
+    env_file:
+      - .env
+    environment:
+      PORT: 3000
+      DATABASE_URL: postgres://postgres:postgres@postgres:5432/crypto_pulse
+      REDIS_URL: redis://redis:6379
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  nginx:
+    image: nginx:1.27-alpine
+    depends_on:
+      api1:
+        condition: service_started
+      api2:
+        condition: service_started
+    ports:
+      - '3000:80'
+    volumes:
+      - ./deploy/nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+
+volumes:
+  postgres-data:
+```
+</CodeGroup>
+
+### Key Differences from Single Instance
+
+1. **Multiple API Services**: `api1` and `api2` instead of a single `api`
+2. **No Port Exposure**: API instances don't expose ports externally
+3. **Nginx Load Balancer**: Routes traffic to API instances
+4. **Shared Redis**: Coordinates batching and throttling across instances
+
+## Nginx Configuration
+
+The load balancer uses a round-robin strategy to distribute requests:
+
+<CodeGroup>
+```nginx deploy/nginx/nginx.conf
+upstream crypto_pulse_api {
+  server api1:3000;
+  server api2:3000;
+}
+
+server {
+  listen 80;
+  server_name _;
+
+  location / {
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header Connection "";
+    proxy_pass http://crypto_pulse_api;
+  }
+}
+```
+</CodeGroup>
+
+### Nginx Features
+
+- **Round-robin load balancing**: Distributes requests evenly
+- **HTTP/1.1 support**: Enables connection reuse
+- **Proxy headers**: Preserves client IP and protocol information
+- **Lightweight**: Alpine-based image for minimal footprint
+
+## Scaling to More Instances
+
+To add more API instances, update `docker-compose.multi.yml`:
+
+<Steps>
+  <Step title="Add API service">
+    Add a new service definition:
+
+    ```yaml docker-compose.multi.yml
+    api3:
+      build:
+        context: .
+      env_file:
+        - .env
+      environment:
+        PORT: 3000
+        DATABASE_URL: postgres://postgres:postgres@postgres:5432/crypto_pulse
+        REDIS_URL: redis://redis:6379
+      depends_on:
+        postgres:
+          condition: service_healthy
+        redis:
+          condition: service_healthy
+    ```
+  </Step>
+
+  <Step title="Update Nginx configuration">
+    Add the new instance to the upstream block in `deploy/nginx/nginx.conf`:
+
+    ```nginx
+    upstream crypto_pulse_api {
+      server api1:3000;
+      server api2:3000;
+      server api3:3000;
+    }
+    ```
+  </Step>
+
+  <Step title="Update Nginx dependencies">
+    Add api3 to Nginx's depends_on:
+
+    ```yaml
+    nginx:
+      depends_on:
+        api1:
+          condition: service_started
+        api2:
+          condition: service_started
+        api3:
+          condition: service_started
+    ```
+  </Step>
+
+  <Step title="Restart the deployment">
+    ```bash
+    docker compose -f docker-compose.multi.yml up --build -d
+    ```
+  </Step>
+</Steps>
+
+## Redis-Coordinated Features
+
+Redis enables these features to work correctly across multiple instances:
+
+### Request Batching
+
+- Redis tracks pending requests per coin across all instances
+- Batch flushes when threshold (3 requests) is reached or after 5 seconds
+- One CoinGecko API call serves all waiting requests across all instances
+
+### Distributed Throttling
+
+- Redis stores throttle counters shared by all instances
+- Global limit: 20 requests per 60 seconds (across all instances)
+- Login limit: 5 requests per 60 seconds (across all instances)
+
+<Warning>
+  Without Redis, each instance would maintain separate counters, making throttling limits ineffective in multi-instance deployments.
+</Warning>
+
+## Managing the Deployment
+
+### View Logs
+
+<CodeGroup>
+```bash All Services
+docker compose -f docker-compose.multi.yml logs -f
+```
+
+```bash Specific Instance
+docker compose -f docker-compose.multi.yml logs -f api1
+```
+
+```bash Load Balancer
+docker compose -f docker-compose.multi.yml logs -f nginx
+```
+</CodeGroup>
+
+### Scale Dynamically
+
+Docker Compose doesn't support dynamic scaling with named services, but you can:
+
+```bash
+# Stop one instance
+docker compose -f docker-compose.multi.yml stop api2
+
+# Start it again
+docker compose -f docker-compose.multi.yml start api2
+```
+
+### Rolling Updates
+
+Update instances one at a time for zero-downtime deployments:
+
+```bash
+# Rebuild and restart api1
+docker compose -f docker-compose.multi.yml up --build -d --no-deps api1
+
+# Wait and verify, then update api2
+docker compose -f docker-compose.multi.yml up --build -d --no-deps api2
+```
+
+### Stop Everything
+
+```bash
+docker compose -f docker-compose.multi.yml down
+```
+
+To remove volumes as well:
+
+```bash
+docker compose -f docker-compose.multi.yml down -v
+```
+
+## Monitoring Load Distribution
+
+Check which instance handled a request by inspecting response headers or logs:
+
+```bash
+# Watch logs from both instances
+docker compose -f docker-compose.multi.yml logs -f api1 api2
+```
+
+Make several requests and observe that they're distributed:
+
+```bash
+for i in {1..10}; do
+  curl -s http://localhost:3000/docs > /dev/null
+  echo "Request $i sent"
+done
+```
+
+## Troubleshooting
+
+### One Instance is Down
+
+Nginx automatically routes traffic to healthy instances. Check logs:
+
+```bash
+docker compose -f docker-compose.multi.yml logs api1
+```
+
+Restart the failed instance:
+
+```bash
+docker compose -f docker-compose.multi.yml restart api1
+```
+
+### Uneven Load Distribution
+
+Nginx uses round-robin by default. If you need different strategies:
+
+```nginx
+# Least connections
+upstream crypto_pulse_api {
+  least_conn;
+  server api1:3000;
+  server api2:3000;
+}
+
+# IP hash (sticky sessions)
+upstream crypto_pulse_api {
+  ip_hash;
+  server api1:3000;
+  server api2:3000;
+}
+```
+
+### Redis Connection Issues
+
+All instances share Redis for coordination. If Redis is down:
+
+```bash
+docker compose -f docker-compose.multi.yml logs redis
+docker compose -f docker-compose.multi.yml restart redis
+```
+
+<Warning>
+  If Redis becomes unavailable, the API will return 503 errors for rate limiting and batching operations.
+</Warning>
+
+## Performance Considerations
+
+### CPU and Memory
+
+Each API instance needs approximately:
+- 512MB RAM minimum
+- 1 CPU core for optimal performance
+
+Monitor resource usage:
+
+```bash
+docker stats
+```
+
+### Connection Pooling
+
+Each instance maintains its own PostgreSQL connection pool. With 2 instances and default pool size of 10, you'll have 20 total connections to PostgreSQL.
+
+Adjust if needed by adding to `.env`:
+
+```bash
+DATABASE_POOL_SIZE=5
+```
+
+## Next Steps
+
+- [Production Best Practices](/deployment/production) - Secure and monitor your deployment
+- [Docker Deployment](/deployment/docker) - Single instance setup for development
+- [Configuration](/configuration/environment-variables) - Environment variable reference

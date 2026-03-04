@@ -1,0 +1,110 @@
+---
+title: 'GET /v1/price/:coinId'
+description: 'Get current USD price for a coin (batched)'
+---
+
+## Overview
+
+Returns the current USD price for a specified cryptocurrency. Requests for the same coin are batched for up to 5 seconds (or flushed early at threshold) to optimize upstream API calls.
+
+## Endpoint
+
+```
+GET /v1/price/:coinId
+```
+
+## Authentication
+
+**Required**: Bearer token authentication
+
+Include the JWT token from the login endpoint in the Authorization header:
+
+```
+Authorization: Bearer <your_access_token>
+```
+
+## Path Parameters
+
+<ParamField path="coinId" type="string" required>
+  CoinGecko coin identifier (lowercase letters, numbers, and hyphens)
+  
+  Example: `bitcoin`, `ethereum`, `binancecoin`
+</ParamField>
+
+## Request Batching
+
+This endpoint implements intelligent request batching:
+
+- Requests for the same coin are grouped together
+- Batch flushes after **5 seconds** (configurable via `BATCH_WINDOW_MS`) OR when **3 requests** accumulate (configurable via `BATCH_THRESHOLD`)
+- One upstream CoinGecko API call serves all waiting requests
+- Results are persisted to PostgreSQL for historical tracking
+
+## Response
+
+<ResponseField name="coinId" type="string">
+  The cryptocurrency identifier
+  
+  Example: `bitcoin`
+</ResponseField>
+
+<ResponseField name="vsCurrency" type="string">
+  The currency the price is denominated in (always "usd")
+  
+  Example: `usd`
+</ResponseField>
+
+<ResponseField name="price" type="number">
+  Current USD price
+  
+  Example: `67210.45`
+</ResponseField>
+
+<ResponseField name="fetchedAt" type="string">
+  ISO 8601 timestamp when the price was fetched from upstream
+  
+  Example: `2026-02-28T03:55:00.000Z`
+</ResponseField>
+
+## Example Request
+
+```bash
+curl -X GET http://localhost:3000/v1/price/bitcoin \
+  -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+```
+
+## Example Response
+
+```json
+{
+  "coinId": "bitcoin",
+  "vsCurrency": "usd",
+  "price": 67210.45,
+  "fetchedAt": "2026-02-28T03:55:00.000Z"
+}
+```
+
+## Error Codes
+
+| Status Code | Description |
+|-------------|-------------|
+| `200` | Price returned successfully |
+| `400` | Invalid coinId format (must be lowercase, numbers, hyphens only) |
+| `401` | Missing or invalid bearer token |
+| `404` | Coin not found in CoinGecko upstream |
+| `429` | Rate limit exceeded (application throttler or upstream provider) |
+| `502` | Upstream request failed |
+| `503` | Backend coordination unavailable (Redis for rate limiter or batching) |
+| `504` | Timed out waiting for batch result (default: 8 seconds) |
+
+## Error Response Format
+
+All errors follow this format:
+
+```json
+{
+  "statusCode": 404,
+  "message": "Coin 'invalid-coin' not found",
+  "error": "Not Found"
+}
+```
