@@ -1,0 +1,86 @@
+{
+  "projectType": "api-service",
+  "projectName": "CryptoPulse",
+  "projectDescription": "NestJS-based cryptocurrency price inquiry API with intelligent request batching, JWT authentication, and historical data tracking",
+  "theme": "aspen",
+  "primaryColor": "#49c704",
+  "lightColor": "#d3e152",
+  "darkColor": "#cedfc6",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": ["introduction", "quickstart", "installation"]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/architecture",
+              "concepts/request-batching",
+              "concepts/authentication"
+            ]
+          },
+          {
+            "group": "Configuration",
+            "pages": [
+              "configuration/environment-variables",
+              "configuration/database-setup",
+              "configuration/redis-setup"
+            ]
+          },
+          {
+            "group": "Deployment",
+            "pages": [
+              "deployment/docker",
+              "deployment/multi-instance",
+              "deployment/production"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Overview",
+            "pages": ["api/overview", "api/authentication"]
+          },
+          {
+            "group": "Endpoints",
+            "pages": [
+              "api/endpoints/login",
+              "api/endpoints/get-price",
+              "api/endpoints/get-history"
+            ]
+          },
+          {
+            "group": "Resources",
+            "pages": [
+              "api/error-codes",
+              "api/rate-limits",
+              "api/swagger-docs"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Intelligent request batching with configurable thresholds",
+    "JWT bearer token authentication",
+    "Historical price tracking with pagination",
+    "Redis-backed distributed rate limiting",
+    "Multi-instance deployment support",
+    "PostgreSQL persistence with TypeORM",
+    "Comprehensive Swagger/OpenAPI documentation",
+    "CoinGecko API integration"
+  ],
+  "publicApiSurface": [
+    "POST /auth/login",
+    "GET /v1/price/:coinId",
+    "GET /v1/price/:coinId/history"
+  ]
+}
